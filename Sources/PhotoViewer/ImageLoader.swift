@@ -286,29 +286,66 @@ final class ImageLoader: ObservableObject {
     /// Returns immediately on a cache hit; otherwise decodes on a background
     /// task at `.utility` priority so it doesn't compete with the main
     /// foreground decode.
+    ///
+    /// Decoding cascades through three strategies — embedded thumbnail,
+    /// full-image thumbnail, then `NSImage(contentsOf:)` — because some
+    /// HEIC files (Live Photos, edited screenshots, etc.) silently fail
+    /// the first path and would otherwise leave the cell on a forever
+    /// spinner.
     func thumbnail(for url: URL) async -> NSImage? {
         if let cached = thumbnailCache.object(forKey: url as NSURL) {
             return cached
         }
         let pixel = Self.thumbnailPixelSize
         let result = await Task.detached(priority: .utility) { () -> SendableCGImage? in
-            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-            let opts: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
-                kCGImageSourceCreateThumbnailFromImageAlways:   false,
-                kCGImageSourceCreateThumbnailWithTransform:     true,
-                kCGImageSourceShouldCacheImmediately:           true,
-                kCGImageSourceThumbnailMaxPixelSize:            pixel,
-            ]
-            guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
-                return nil
-            }
-            return SendableCGImage(cg)
+            Self.decodeThumbnailCG(url: url, maxPixel: pixel)
         }.value
-        guard let cg = result?.image else { return nil }
-        let nsImage = NSImage(cgImage: cg, size: .zero)
-        thumbnailCache.setObject(nsImage, forKey: url as NSURL)
-        return nsImage
+
+        if let cg = result?.image {
+            let nsImage = NSImage(cgImage: cg, size: .zero)
+            thumbnailCache.setObject(nsImage, forKey: url as NSURL)
+            return nsImage
+        }
+
+        // Last-ditch fallback: let AppKit have a go. Slow and full-resolution,
+        // but it handles formats / quirks that ImageIO's thumbnail API trips on.
+        let fallback = await Task.detached(priority: .utility) { () -> NSImage? in
+            NSImage(contentsOf: url)
+        }.value
+        if let fallback {
+            thumbnailCache.setObject(fallback, forKey: url as NSURL)
+            return fallback
+        }
+
+        return nil
+    }
+
+    /// Try the fast embedded-thumbnail path first; if ImageIO can't or
+    /// won't produce one, ask it to decode from the full image data.
+    nonisolated private static func decodeThumbnailCG(url: URL, maxPixel: CGFloat) -> SendableCGImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+
+        let baseOpts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately:       true,
+            kCGImageSourceThumbnailMaxPixelSize:        maxPixel,
+        ]
+
+        // 1. Fast: use the embedded thumbnail if one exists and is large enough.
+        var opts = baseOpts
+        opts[kCGImageSourceCreateThumbnailFromImageIfAbsent] = false
+        opts[kCGImageSourceCreateThumbnailFromImageAlways]   = false
+        if let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) {
+            return SendableCGImage(cg)
+        }
+
+        // 2. Slower: force ImageIO to decode the full frame and downsample it.
+        opts[kCGImageSourceCreateThumbnailFromImageAlways] = true
+        if let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) {
+            return SendableCGImage(cg)
+        }
+
+        return nil
     }
 
     /// Jump directly to a sibling URL (used by the thumbnail strip).

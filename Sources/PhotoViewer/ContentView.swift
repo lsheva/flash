@@ -670,23 +670,37 @@ private struct ThumbnailCell: View {
     let action: () -> Void
 
     @EnvironmentObject var loader: ImageLoader
-    @State private var image: NSImage?
+
+    private enum LoadState: Equatable {
+        case loading
+        case loaded(NSImage)
+        case failed
+    }
+    @State private var state: LoadState = .loading
 
     var body: some View {
         Button(action: action) {
             ZStack {
-                if let image {
+                switch state {
+                case .loaded(let image):
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.medium)
                         .scaledToFill()
-                } else {
+                case .loading:
                     Rectangle()
                         .fill(.quaternary)
                         .overlay {
                             ProgressView()
                                 .controlSize(.small)
                                 .opacity(0.6)
+                        }
+                case .failed:
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
                         }
                 }
             }
@@ -703,7 +717,14 @@ private struct ThumbnailCell: View {
         .buttonStyle(.plain)
         .help(url.lastPathComponent)
         .task(id: url) {
-            image = await loader.thumbnail(for: url)
+            // Reset to loading on (re-)appearance so a previous .failed
+            // state doesn't get carried over forever.
+            state = .loading
+            if let img = await loader.thumbnail(for: url) {
+                state = .loaded(img)
+            } else {
+                state = .failed
+            }
         }
     }
 }
