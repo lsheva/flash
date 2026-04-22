@@ -197,6 +197,38 @@ private struct PhotographicBackground: View {
 
 // MARK: - Zoomable image
 
+/// Mutable bag of "current frame" values that the scroll-wheel monitor
+/// needs but can't easily capture from a SwiftUI value-type view.
+/// We update the fields from `body` on every render and the monitor reads
+/// them at event time.
+private final class ZoomGeometryBox {
+    var viewport: CGSize = .zero
+    var imgSize:  CGSize = .zero
+    var fit:      CGFloat = 1
+    var hovered:  Bool = false
+}
+
+/// Owns a single `NSEvent` local monitor for scroll-wheel events. The
+/// payload closure can be reassigned at any time; the monitor itself is
+/// installed once.
+private final class ScrollWheelHandler {
+    var handler: ((NSEvent) -> NSEvent?)?
+    private var monitor: Any?
+
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            self?.handler?(event) ?? event
+        }
+    }
+
+    func uninstall() {
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+    }
+
+    deinit { uninstall() }
+}
+
 /// Displays the image at "fit-to-window × zoom factor".
 ///
 /// We render the image directly with `.offset` + `.frame` (no `ScrollView`)
@@ -204,32 +236,32 @@ private struct PhotographicBackground: View {
 /// pinch-to-zoom around the cursor: the point under the user's fingers at
 /// the start of the gesture stays under the cursor as the factor changes.
 ///
-/// Mouse-drag panning is supported when the image is larger than the
-/// viewport. (`ScrollView` would also give us trackpad two-finger panning
-/// for free, but it doesn't expose pixel-level scroll offsets, which makes
-/// cursor-anchored zoom impossible to do correctly.)
+/// Panning sources:
+/// - Mouse drag (`DragGesture`)
+/// - Trackpad two-finger swipe / mouse wheel (a local `NSEvent` scroll-wheel
+///   monitor that updates `offset` directly when zoomed in and the cursor
+///   is over the image).
+///
+/// When zoomed in, lightweight overlay scrollbars on the right and bottom
+/// edges show the visible portion, fading themselves out automatically
+/// after a short idle period.
 private struct ZoomableImage: View {
     let image: NSImage
     @EnvironmentObject var loader: ImageLoader
 
-    /// Resting pan offset, in viewport-center coordinates (i.e. (0,0) means
-    /// the image is centered in the viewport). Positive x moves the image
-    /// to the right, positive y moves it down.
     @State private var offset: CGSize = .zero
-
-    /// Most recent cursor position, also in viewport-center coordinates.
-    /// `nil` when the cursor is not over the image (e.g. fullscreen pinch).
     @State private var cursor: CGPoint? = nil
-
-    /// Live pinch multiplier, auto-resets to 1.0 when the gesture ends.
     @GestureState private var pinch: CGFloat = 1.0
-
-    /// Snapshot taken at the moment a pinch begins, so we can compute the
-    /// anchored offset every frame from the same starting point.
     @State private var pinchStart: PinchStart? = nil
-
-    /// In-progress mouse-drag translation, auto-resets on release.
     @GestureState private var dragDelta: CGSize = .zero
+
+    @State private var geom = ZoomGeometryBox()
+    @State private var scrollHandler = ScrollWheelHandler()
+
+    /// Bumped on every pan event (drag, wheel, pinch) so the scrollbar
+    /// overlay can fade itself out after a brief idle period.
+    @State private var lastInteraction = Date.distantPast
+    @State private var scrollbarsVisible = false
 
     private struct PinchStart: Equatable {
         var factor: CGFloat
@@ -242,6 +274,15 @@ private struct ZoomableImage: View {
             let viewport = geo.size
             let imgSize = image.size
             let fit = fitScale(image: imgSize, into: viewport)
+
+            // Refresh the scroll-wheel monitor's data every render. Wrapped
+            // in a let-bound closure because @ViewBuilder rejects bare
+            // assignment statements.
+            let _: Void = {
+                geom.viewport = viewport
+                geom.imgSize  = imgSize
+                geom.fit      = fit
+            }()
 
             let liveFactor: CGFloat = {
                 if let start = pinchStart {
@@ -271,6 +312,36 @@ private struct ZoomableImage: View {
                 .frame(width: viewport.width, height: viewport.height)
                 .clipped()
                 .contentShape(Rectangle())
+                .overlay(alignment: .bottom) {
+                    if scaledSize.width > viewport.width + 0.5 {
+                        ScrollIndicator(
+                            axis: .horizontal,
+                            visibleFraction: viewport.width / scaledSize.width,
+                            position: scrollPosition(offsetAxis: liveOffset.width,
+                                                    scaledExtent: scaledSize.width,
+                                                    viewportExtent: viewport.width)
+                        )
+                        .frame(width: viewport.width - 16, height: 6)
+                        .padding(.bottom, 5)
+                        .opacity(scrollbarsVisible ? 1 : 0)
+                        .animation(.easeOut(duration: 0.25), value: scrollbarsVisible)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if scaledSize.height > viewport.height + 0.5 {
+                        ScrollIndicator(
+                            axis: .vertical,
+                            visibleFraction: viewport.height / scaledSize.height,
+                            position: scrollPosition(offsetAxis: liveOffset.height,
+                                                    scaledExtent: scaledSize.height,
+                                                    viewportExtent: viewport.height)
+                        )
+                        .frame(width: 6, height: viewport.height - 16)
+                        .padding(.trailing, 5)
+                        .opacity(scrollbarsVisible ? 1 : 0)
+                        .animation(.easeOut(duration: 0.25), value: scrollbarsVisible)
+                    }
+                }
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let p):
@@ -278,21 +349,80 @@ private struct ZoomableImage: View {
                             x: p.x - viewport.width  / 2,
                             y: p.y - viewport.height / 2
                         )
+                        geom.hovered = true
                     case .ended:
                         cursor = nil
+                        geom.hovered = false
                     }
                 }
                 .gesture(magnify(viewport: viewport, fit: fit, imgSize: imgSize))
                 .simultaneousGesture(pan(factor: liveFactor, fit: fit, imgSize: imgSize, viewport: viewport))
+                .onChange(of: liveOffset) { _, _ in flashScrollbars() }
                 .onChange(of: loader.zoom) { _, new in
                     if new.isFit {
                         withAnimation(.spring(duration: 0.18)) { offset = .zero }
                     }
+                    flashScrollbars()
                 }
                 .onChange(of: image) { _, _ in
                     offset = .zero
                 }
+                .onAppear {
+                    installScrollMonitor()
+                }
+                .onDisappear {
+                    scrollHandler.uninstall()
+                }
         }
+    }
+
+    // MARK: Scroll wheel / trackpad pan
+
+    private func installScrollMonitor() {
+        scrollHandler.handler = { [self] event in
+            let factor = loader.zoom.factor
+            guard geom.hovered, factor > 1 else { return event }
+
+            let scaledW = geom.imgSize.width  * geom.fit * factor
+            let scaledH = geom.imgSize.height * geom.fit * factor
+            let maxX = max(0, (scaledW - geom.viewport.width)  / 2)
+            let maxY = max(0, (scaledH - geom.viewport.height) / 2)
+
+            // `scrollingDeltaX/Y` already respect the user's "natural scroll"
+            // preference, so adding them directly to the offset moves the
+            // image the same way macOS would scroll a native NSScrollView.
+            let raw = CGSize(
+                width:  offset.width  + event.scrollingDeltaX,
+                height: offset.height + event.scrollingDeltaY
+            )
+            offset = CGSize(
+                width:  min(max(raw.width,  -maxX), maxX),
+                height: min(max(raw.height, -maxY), maxY)
+            )
+            flashScrollbars()
+            return nil
+        }
+        scrollHandler.install()
+    }
+
+    private func flashScrollbars() {
+        lastInteraction = Date()
+        scrollbarsVisible = true
+        let tag = lastInteraction
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            if tag == lastInteraction { scrollbarsVisible = false }
+        }
+    }
+
+    /// Maps an offset on a single axis to a 0…1 scrollbar position
+    /// (0 = thumb at start of track, 1 = thumb at end).
+    private func scrollPosition(offsetAxis: CGFloat, scaledExtent: CGFloat, viewportExtent: CGFloat) -> CGFloat {
+        let range = scaledExtent - viewportExtent
+        guard range > 0 else { return 0.5 }
+        // offset = +max ⇒ image shifted right ⇒ leftmost portion visible ⇒ thumb at 0
+        // offset = -max ⇒ image shifted left  ⇒ rightmost portion visible ⇒ thumb at 1
+        return min(max(0.5 - offsetAxis / range, 0), 1)
     }
 
     // MARK: Gesture builders
@@ -383,6 +513,41 @@ private struct ZoomableImage: View {
 
     private func clamp(_ x: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
         min(max(x, lo), hi)
+    }
+}
+
+// MARK: - Scroll indicator (custom overlay scrollbar)
+
+private struct ScrollIndicator: View {
+    enum Axis { case horizontal, vertical }
+    let axis: Axis
+    let visibleFraction: CGFloat   // viewport / content, in (0, 1]
+    let position: CGFloat          // 0…1, where the thumb sits on the track
+
+    var body: some View {
+        GeometryReader { geo in
+            let trackLen = (axis == .horizontal) ? geo.size.width : geo.size.height
+            let thumbLen = max(24, trackLen * min(max(visibleFraction, 0), 1))
+            let thumbPos = (trackLen - thumbLen) * min(max(position, 0), 1)
+
+            ZStack(alignment: .topLeading) {
+                Capsule()
+                    .fill(.black.opacity(0.18))
+                Capsule()
+                    .fill(.white.opacity(0.7))
+                    .frame(
+                        width:  axis == .horizontal ? thumbLen     : geo.size.width,
+                        height: axis == .horizontal ? geo.size.height : thumbLen
+                    )
+                    .offset(
+                        x: axis == .horizontal ? thumbPos : 0,
+                        y: axis == .horizontal ? 0        : thumbPos
+                    )
+            }
+            .compositingGroup()
+            .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+        }
+        .allowsHitTesting(false)
     }
 }
 
