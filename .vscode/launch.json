@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:photo-viewer}",
+      "name": "Debug PhotoViewer",
+      "target": "PhotoViewer",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug PhotoViewer"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:photo-viewer}",
+      "name": "Release PhotoViewer",
+      "target": "PhotoViewer",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release PhotoViewer"
+    }
+  ]
+}

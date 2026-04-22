@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        The app is intentionally NOT sandboxed.
+
+        Browsing siblings of the opened image requires reading the parent
+        directory. Under App Sandbox, `com.apple.security.files.user-selected.*`
+        only grants access to the file the user explicitly picked through
+        Powerbox, not to its parent folder, so `FileManager.contentsOfDirectory`
+        silently fails and arrow-key navigation does nothing.
+
+        macOS still applies TCC (per-folder consent prompts for Desktop /
+        Documents / Downloads / iCloud Drive / etc.) on first access, which is
+        the right level of protection for a local image viewer.
+    -->
+</dict>
+</plist>
