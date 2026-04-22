@@ -9,22 +9,33 @@ enum ThumbnailPosition: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Zoom factor relative to "fit to window".
-/// `1.0` means the image fills the viewport with `.scaledToFit()`; values
-/// above 1 are zoomed in (and the image becomes pannable).
-struct Zoom: Equatable {
-    var factor: CGFloat = 1.0
-    static let min: CGFloat = 0.2
-    static let max: CGFloat = 8.0
-    static let step: CGFloat = 1.5
+/// How the image is currently sized relative to the viewport.
+///
+/// - `.fit` is a *mode*: the image is scaled-to-fit the viewport and follows
+///   any window resize.
+/// - `.scale(s)` is an *absolute* zoom level expressed as
+///   `source pixel : screen backing pixel`. `s == 1.0` means each image
+///   pixel is rendered onto exactly one physical screen pixel — i.e. the
+///   "100%" or "Actual Size" convention used by Preview, Photoshop, etc.
+enum Zoom: Equatable {
+    case fit
+    case scale(CGFloat)
 
-    static let fit = Zoom(factor: 1.0)
+    /// Absolute scale bounds and step factor. `step` is √2 so two clicks
+    /// double the zoom, which lines up with the percentage labels people
+    /// expect (50, 71, 100, 141, 200, 283, 400…).
+    static let min:  CGFloat = 0.05
+    static let max:  CGFloat = 16.0
+    static let step: CGFloat = 1.4142135623730951
 
-    var isFit: Bool { abs(factor - 1.0) < 0.0005 }
-    var displayPercent: Int { Int((factor * 100).rounded()) }
+    var isFit: Bool {
+        if case .fit = self { return true } else { return false }
+    }
 
-    func zoomedIn()  -> Zoom { Zoom(factor: Swift.min(factor * Zoom.step, Zoom.max)) }
-    func zoomedOut() -> Zoom { Zoom(factor: Swift.max(factor / Zoom.step, Zoom.min)) }
+    /// The absolute scale, when in `.scale` mode.
+    var absolute: CGFloat? {
+        if case .scale(let s) = self { return s } else { return nil }
+    }
 }
 
 /// Lightweight, decoded-from-EXIF metadata used by the bottom info bar.
@@ -80,6 +91,13 @@ final class ImageLoader: ObservableObject {
     @Published var zoom: Zoom = .fit
     @Published var showsMetadata: Bool = true
     @Published private(set) var metadata: ImageMetadata?
+
+    /// The effective on-screen scale (`1.0` = 1 image pixel : 1 backing
+    /// pixel) that's *currently* being rendered. The view writes this on
+    /// every layout pass so menu items / toolbar buttons that step the
+    /// zoom can do so relative to whatever the user is looking at right
+    /// now — including when they're in `.fit` mode.
+    var currentEffectiveScale: CGFloat = 1.0
 
     /// Every UTType that ImageIO can decode on this system. Computed once.
     static let supportedTypes: [UTType] = {
@@ -179,9 +197,21 @@ final class ImageLoader: ObservableObject {
 
     // MARK: - Zoom
 
-    func zoomIn()    { zoom = zoom.zoomedIn() }
-    func zoomOut()   { zoom = zoom.zoomedOut() }
-    func zoomToFit() { zoom = .fit }
+    /// Zoom in one √2 step from whatever the user is looking at right now,
+    /// even if that's `.fit` mode (in which case the next state becomes an
+    /// absolute scale slightly larger than the current fit scale).
+    func zoomIn() {
+        let next = min(currentEffectiveScale * Zoom.step, Zoom.max)
+        zoom = .scale(next)
+    }
+
+    func zoomOut() {
+        let next = max(currentEffectiveScale / Zoom.step, Zoom.min)
+        zoom = .scale(next)
+    }
+
+    func zoomToFit()        { zoom = .fit }
+    func zoomToActualSize() { zoom = .scale(1.0) }
 
     // MARK: - Private
 

@@ -110,18 +110,30 @@ struct ContentView: View {
                 Label("Zoom Out", systemImage: "minus.magnifyingglass")
             }
             .help("Zoom out (⌘−)")
-            .disabled(loader.zoom.factor <= Zoom.min + 0.001)
+            .disabled(zoomOutDisabled)
         }
 
         ToolbarItem(id: "zoomFit", placement: .principal) {
-            Button {
-                loader.zoomToFit()
+            // Click cycles Fit ↔ 100%. Holding ⌥ on click jumps to actual
+            // size unconditionally (a power-user shortcut Preview also has).
+            Menu {
+                Button("Fit to Window") { loader.zoomToFit() }
+                    .keyboardShortcut("0", modifiers: .command)
+                Button("Actual Size (100%)") { loader.zoomToActualSize() }
+                    .keyboardShortcut("1", modifiers: .command)
             } label: {
-                Text("\(loader.zoom.displayPercent)%")
+                Text(zoomLabel)
                     .font(.subheadline.monospacedDigit())
                     .frame(minWidth: 52)
+            } primaryAction: {
+                if loader.zoom.isFit {
+                    loader.zoomToActualSize()
+                } else {
+                    loader.zoomToFit()
+                }
             }
-            .help("Fit to window (⌘0)")
+            .menuIndicator(.hidden)
+            .help("Fit to window (⌘0) / Actual size (⌘1)")
         }
 
         ToolbarItem(id: "zoomIn", placement: .principal) {
@@ -131,7 +143,7 @@ struct ContentView: View {
                 Label("Zoom In", systemImage: "plus.magnifyingglass")
             }
             .help("Zoom in (⌘+)")
-            .disabled(loader.zoom.factor >= Zoom.max - 0.001)
+            .disabled(zoomInDisabled)
         }
 
         ToolbarItem(id: "info", placement: .primaryAction) {
@@ -169,6 +181,26 @@ struct ContentView: View {
         }
     }
 
+    /// "Fit" while in fit mode, otherwise the absolute scale rounded to a
+    /// percentage. Uses the live effective scale that `ZoomableImage`
+    /// publishes back so "Fit" is shown alongside the user's current view.
+    private var zoomLabel: String {
+        switch loader.zoom {
+        case .fit:           return "Fit"
+        case .scale(let s):  return "\(Int((s * 100).rounded()))%"
+        }
+    }
+
+    private var zoomInDisabled: Bool {
+        let current = loader.zoom.absolute ?? loader.currentEffectiveScale
+        return current >= Zoom.max - 0.001
+    }
+
+    private var zoomOutDisabled: Bool {
+        let current = loader.zoom.absolute ?? loader.currentEffectiveScale
+        return current <= Zoom.min + 0.001
+    }
+
     private var windowTitle: String {
         guard let url = loader.currentURL else { return "Photo Viewer" }
         return url.lastPathComponent
@@ -203,9 +235,8 @@ private struct PhotographicBackground: View {
 /// them at event time.
 private final class ZoomGeometryBox {
     var viewport: CGSize = .zero
-    var imgSize:  CGSize = .zero
-    var fit:      CGFloat = 1
-    var hovered:  Bool = false
+    var scaled:   CGSize = .zero
+    var hovered:  Bool   = false
 }
 
 /// Owns a single `NSEvent` local monitor for scroll-wheel events. The
@@ -249,22 +280,42 @@ private struct ZoomableImage: View {
     let image: NSImage
     @EnvironmentObject var loader: ImageLoader
 
+    /// Backing scale factor of the display the view is currently on
+    /// (1.0 on a 1× monitor, 2.0 on Retina, etc.). Used to convert between
+    /// "absolute zoom" (image-pixel : screen-backing-pixel) and SwiftUI's
+    /// "points per image pixel" rendering metric.
+    @Environment(\.displayScale) private var displayScale: CGFloat
+
+    /// Resting pan offset, in viewport-center coordinates (i.e. (0,0) means
+    /// the image is centered in the viewport). Positive x moves the image
+    /// to the right, positive y moves it down. Measured in points.
     @State private var offset: CGSize = .zero
+
+    /// Most recent cursor position, also in viewport-center coordinates.
     @State private var cursor: CGPoint? = nil
+
+    /// Live pinch multiplier (resets to 1.0 between gestures).
     @GestureState private var pinch: CGFloat = 1.0
+
+    /// Snapshot taken at the moment a pinch begins. We record the *points
+    /// per image pixel* in effect at that moment so we can scale linearly
+    /// from a single source of truth, even if the user starts pinching
+    /// while in `.fit` mode.
     @State private var pinchStart: PinchStart? = nil
+
+    /// In-progress mouse-drag translation (resets on release).
     @GestureState private var dragDelta: CGSize = .zero
 
     @State private var geom = ZoomGeometryBox()
     @State private var scrollHandler = ScrollWheelHandler()
 
-    /// Bumped on every pan event (drag, wheel, pinch) so the scrollbar
-    /// overlay can fade itself out after a brief idle period.
+    /// Bumped on every pan event so the scrollbar overlay can fade out
+    /// after a brief idle period.
     @State private var lastInteraction = Date.distantPast
     @State private var scrollbarsVisible = false
 
     private struct PinchStart: Equatable {
-        var factor: CGFloat
+        var ppp:    CGFloat   // points per image pixel at gesture start
         var offset: CGSize
         var cursor: CGPoint
     }
@@ -272,40 +323,42 @@ private struct ZoomableImage: View {
     var body: some View {
         GeometryReader { geo in
             let viewport = geo.size
-            let imgSize = image.size
-            let fit = fitScale(image: imgSize, into: viewport)
+            let imgSize  = image.size
+            let fitPPP   = fitScale(image: imgSize, into: viewport)
+            let restPPP  = restingPPP(fit: fitPPP)
+            let livePPP: CGFloat = {
+                if let start = pinchStart {
+                    return clampPPP(start.ppp * pinch, fit: fitPPP)
+                }
+                return restPPP
+            }()
 
-            // Refresh the scroll-wheel monitor's data every render. Wrapped
-            // in a let-bound closure because @ViewBuilder rejects bare
+            let scaledSize = CGSize(
+                width:  imgSize.width  * livePPP,
+                height: imgSize.height * livePPP
+            )
+
+            let liveOffset = clampOffset(
+                rawOffset(forPPP: livePPP),
+                scaled: scaledSize,
+                viewport: viewport
+            )
+
+            // Push current frame metrics to objects that need them outside
+            // the view tree (scroll-wheel monitor, toolbar). Wrapped in a
+            // let-bound closure because @ViewBuilder rejects bare
             // assignment statements.
             let _: Void = {
                 geom.viewport = viewport
-                geom.imgSize  = imgSize
-                geom.fit      = fit
+                geom.scaled   = scaledSize
+                loader.currentEffectiveScale = livePPP * displayScale
             }()
-
-            let liveFactor: CGFloat = {
-                if let start = pinchStart {
-                    return clamp(start.factor * pinch, Zoom.min, Zoom.max)
-                }
-                return loader.zoom.factor
-            }()
-
-            let liveOffset = clampOffset(
-                rawOffset(for: liveFactor),
-                factor: liveFactor, image: imgSize, fit: fit, viewport: viewport
-            )
-
-            let scaledSize = CGSize(
-                width:  imgSize.width  * fit * liveFactor,
-                height: imgSize.height * fit * liveFactor
-            )
 
             Color.clear
                 .overlay {
                     Image(nsImage: image)
                         .resizable()
-                        .interpolation(.high)
+                        .interpolation(livePPP * displayScale >= 1.0 ? .none : .high)
                         .frame(width: scaledSize.width, height: scaledSize.height)
                         .offset(liveOffset)
                 }
@@ -355,8 +408,8 @@ private struct ZoomableImage: View {
                         geom.hovered = false
                     }
                 }
-                .gesture(magnify(viewport: viewport, fit: fit, imgSize: imgSize))
-                .simultaneousGesture(pan(factor: liveFactor, fit: fit, imgSize: imgSize, viewport: viewport))
+                .gesture(magnify(fit: fitPPP, restPPP: restPPP, imgSize: imgSize, viewport: viewport))
+                .simultaneousGesture(pan(scaled: scaledSize, viewport: viewport))
                 .onChange(of: liveOffset) { _, _ in flashScrollbars() }
                 .onChange(of: loader.zoom) { _, new in
                     if new.isFit {
@@ -376,29 +429,40 @@ private struct ZoomableImage: View {
         }
     }
 
+    // MARK: Zoom math
+
+    /// "Resting" points-per-image-pixel value implied by the loader's
+    /// current zoom mode (i.e. ignoring any in-progress pinch).
+    private func restingPPP(fit: CGFloat) -> CGFloat {
+        switch loader.zoom {
+        case .fit:           return fit
+        case .scale(let s):  return s / displayScale
+        }
+    }
+
+    /// Clamp a candidate PPP so the resulting absolute scale stays within
+    /// `Zoom.min ... Zoom.max`, but never let the user shrink the image
+    /// smaller than fit-to-window — that would just leave empty space.
+    private func clampPPP(_ raw: CGFloat, fit: CGFloat) -> CGFloat {
+        let minPPP = max(Zoom.min / displayScale, fit)
+        let maxPPP = Zoom.max / displayScale
+        return min(max(raw, minPPP), maxPPP)
+    }
+
     // MARK: Scroll wheel / trackpad pan
 
     private func installScrollMonitor() {
         scrollHandler.handler = { [self] event in
-            let factor = loader.zoom.factor
-            guard geom.hovered, factor > 1 else { return event }
+            guard geom.hovered,
+                  geom.scaled.width  > geom.viewport.width  + 0.5 ||
+                  geom.scaled.height > geom.viewport.height + 0.5
+            else { return event }
 
-            let scaledW = geom.imgSize.width  * geom.fit * factor
-            let scaledH = geom.imgSize.height * geom.fit * factor
-            let maxX = max(0, (scaledW - geom.viewport.width)  / 2)
-            let maxY = max(0, (scaledH - geom.viewport.height) / 2)
-
-            // `scrollingDeltaX/Y` already respect the user's "natural scroll"
-            // preference, so adding them directly to the offset moves the
-            // image the same way macOS would scroll a native NSScrollView.
             let raw = CGSize(
                 width:  offset.width  + event.scrollingDeltaX,
                 height: offset.height + event.scrollingDeltaY
             )
-            offset = CGSize(
-                width:  min(max(raw.width,  -maxX), maxX),
-                height: min(max(raw.height, -maxY), maxY)
-            )
+            offset = clampOffset(raw, scaled: geom.scaled, viewport: geom.viewport)
             flashScrollbars()
             return nil
         }
@@ -420,14 +484,12 @@ private struct ZoomableImage: View {
     private func scrollPosition(offsetAxis: CGFloat, scaledExtent: CGFloat, viewportExtent: CGFloat) -> CGFloat {
         let range = scaledExtent - viewportExtent
         guard range > 0 else { return 0.5 }
-        // offset = +max ⇒ image shifted right ⇒ leftmost portion visible ⇒ thumb at 0
-        // offset = -max ⇒ image shifted left  ⇒ rightmost portion visible ⇒ thumb at 1
         return min(max(0.5 - offsetAxis / range, 0), 1)
     }
 
     // MARK: Gesture builders
 
-    private func magnify(viewport: CGSize, fit: CGFloat, imgSize: CGSize) -> some Gesture {
+    private func magnify(fit: CGFloat, restPPP: CGFloat, imgSize: CGSize, viewport: CGSize) -> some Gesture {
         MagnifyGesture(minimumScaleDelta: 0.005)
             .updating($pinch) { value, state, _ in
                 state = value.magnification
@@ -435,7 +497,7 @@ private struct ZoomableImage: View {
             .onChanged { _ in
                 if pinchStart == nil {
                     pinchStart = PinchStart(
-                        factor: loader.zoom.factor,
+                        ppp:    restPPP,
                         offset: offset,
                         cursor: cursor ?? .zero
                     )
@@ -443,20 +505,22 @@ private struct ZoomableImage: View {
             }
             .onEnded { value in
                 let start = pinchStart
-                    ?? PinchStart(factor: loader.zoom.factor, offset: offset, cursor: cursor ?? .zero)
-                let newFactor = clamp(start.factor * value.magnification, Zoom.min, Zoom.max)
-                let r = newFactor / start.factor
+                    ?? PinchStart(ppp: restPPP, offset: offset, cursor: cursor ?? .zero)
+                let newPPP = clampPPP(start.ppp * value.magnification, fit: fit)
+                let r = newPPP / start.ppp
                 let committed = CGSize(
                     width:  start.cursor.x * (1 - r) + start.offset.width  * r,
                     height: start.cursor.y * (1 - r) + start.offset.height * r
                 )
-                loader.zoom = Zoom(factor: newFactor)
-                offset = clampOffset(committed, factor: newFactor, image: imgSize, fit: fit, viewport: viewport)
+                let scaled = CGSize(width: imgSize.width * newPPP,
+                                    height: imgSize.height * newPPP)
+                loader.zoom = .scale(newPPP * displayScale)
+                offset = clampOffset(committed, scaled: scaled, viewport: viewport)
                 pinchStart = nil
             }
     }
 
-    private func pan(factor: CGFloat, fit: CGFloat, imgSize: CGSize, viewport: CGSize) -> some Gesture {
+    private func pan(scaled: CGSize, viewport: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2)
             .updating($dragDelta) { value, state, _ in
                 state = value.translation
@@ -466,18 +530,18 @@ private struct ZoomableImage: View {
                     width:  offset.width  + value.translation.width,
                     height: offset.height + value.translation.height
                 )
-                offset = clampOffset(raw, factor: factor, image: imgSize, fit: fit, viewport: viewport)
+                offset = clampOffset(raw, scaled: scaled, viewport: viewport)
             }
     }
 
-    // MARK: Math
+    // MARK: Geometry helpers
 
     /// Compose the live offset for the current frame: anchored-pinch offset
     /// (if a pinch is active) plus any in-progress mouse-drag delta.
-    private func rawOffset(for liveFactor: CGFloat) -> CGSize {
+    private func rawOffset(forPPP livePPP: CGFloat) -> CGSize {
         var base: CGSize
         if let start = pinchStart {
-            let r = liveFactor / start.factor
+            let r = livePPP / start.ppp
             base = CGSize(
                 width:  start.cursor.x * (1 - r) + start.offset.width  * r,
                 height: start.cursor.y * (1 - r) + start.offset.height * r
@@ -492,13 +556,11 @@ private struct ZoomableImage: View {
 
     /// Keep the image from being dragged completely outside the viewport.
     /// When the image is smaller than the viewport on an axis, force-center
-    /// it on that axis (offset = 0); otherwise allow it to move within
+    /// it on that axis; otherwise allow it to move within
     /// `±(scaledSize - viewport) / 2`.
-    private func clampOffset(_ raw: CGSize, factor: CGFloat, image: CGSize, fit: CGFloat, viewport: CGSize) -> CGSize {
-        let scaledW = image.width  * fit * factor
-        let scaledH = image.height * fit * factor
-        let maxX = max(0, (scaledW - viewport.width)  / 2)
-        let maxY = max(0, (scaledH - viewport.height) / 2)
+    private func clampOffset(_ raw: CGSize, scaled: CGSize, viewport: CGSize) -> CGSize {
+        let maxX = max(0, (scaled.width  - viewport.width)  / 2)
+        let maxY = max(0, (scaled.height - viewport.height) / 2)
         return CGSize(
             width:  min(max(raw.width,  -maxX), maxX),
             height: min(max(raw.height, -maxY), maxY)
@@ -509,10 +571,6 @@ private struct ZoomableImage: View {
         guard image.width > 0, image.height > 0,
               viewport.width > 0, viewport.height > 0 else { return 1 }
         return min(viewport.width / image.width, viewport.height / image.height)
-    }
-
-    private func clamp(_ x: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
-        min(max(x, lo), hi)
     }
 }
 

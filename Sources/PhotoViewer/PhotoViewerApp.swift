@@ -59,10 +59,12 @@ struct PhotoViewerApp: App {
 
                 Button("Zoom In") { loader.zoomIn() }
                     .keyboardShortcut("+", modifiers: .command)
-                    .disabled(loader.zoom.factor >= Zoom.max - 0.001)
+                    .disabled((loader.zoom.absolute ?? loader.currentEffectiveScale) >= Zoom.max - 0.001)
                 Button("Zoom Out") { loader.zoomOut() }
                     .keyboardShortcut("-", modifiers: .command)
-                    .disabled(loader.zoom.factor <= Zoom.min + 0.001)
+                    .disabled((loader.zoom.absolute ?? loader.currentEffectiveScale) <= Zoom.min + 0.001)
+                Button("Actual Size") { loader.zoomToActualSize() }
+                    .keyboardShortcut("1", modifiers: .command)
                 Button("Fit to Window") { loader.zoomToFit() }
                     .keyboardShortcut("0", modifiers: .command)
 
