@@ -62,7 +62,17 @@ struct ContentView: View {
                         .padding(.bottom, 24)
                 }
             }
+
+            if loader.showsLog {
+                LoadLogOverlay(log: loader.log) {
+                    loader.showsLog = false
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: loader.showsLog)
     }
 
     @ViewBuilder
@@ -144,6 +154,16 @@ struct ContentView: View {
             }
             .help("Zoom in (⌘+)")
             .disabled(zoomInDisabled)
+        }
+
+        ToolbarItem(id: "delete", placement: .primaryAction) {
+            Button(role: .destructive) {
+                loader.deleteCurrent()
+            } label: {
+                Label("Move to Trash", systemImage: "trash")
+            }
+            .help("Move to Trash (⌘⌫)")
+            .disabled(!loader.canDeleteCurrent)
         }
 
         ToolbarItem(id: "info", placement: .primaryAction) {
@@ -280,37 +300,131 @@ private struct HDRImageView: NSViewRepresentable {
     let image: NSImage
     /// `true` → nearest-neighbour magnification (zoomed in ≥ 100%).
     let pixelated: Bool
+    /// Synchronous hook invoked the instant we're about to swap the
+    /// bitmap. Implementations capture per-commit state (e.g. the
+    /// pending navigation press timestamp) and return a closure that
+    /// fires once the CATransaction commit has been handed off to the
+    /// render server. Returning `nil` means "no follow-up needed".
+    /// Used by the loader to log press → first-frame latency without
+    /// races when the user arrow-keys faster than commits land.
+    let prepareImageSwap: () -> (() -> Void)?
 
-    func makeNSView(context: Context) -> PassthroughImageView {
-        let v = PassthroughImageView()
+    func makeNSView(context: Context) -> CGImageHostingView {
+        let v = CGImageHostingView()
         v.wantsLayer = true
-        v.imageScaling = .scaleAxesIndependently
-        v.imageAlignment = .alignCenter
+        // Replace the default action map with no-op CAActions so
+        // implicit `contents`/`bounds`/`position` animations don't
+        // cross-fade between images on navigation.
+        v.layer?.actions = Self.disabledLayerActions
         return v
     }
 
-    func updateNSView(_ v: PassthroughImageView, context: Context) {
-        if v.image !== image { v.image = image }
+    func updateNSView(_ v: CGImageHostingView, context: Context) {
+        if v.displayedImage !== image {
+            // Capture per-commit follow-up *before* we set up the
+            // transaction. That way the press time logged on completion
+            // is the one that triggered THIS swap, even if the user
+            // fires another nav before this commit lands.
+            let onRendered = prepareImageSwap()
+            // Prefer the pre-rendered IOSurface stashed on the NSImage
+            // during decode. CALayer treats an IOSurface as a Mach-port
+            // reference into shared memory: the WindowServer already
+            // has the bytes, and the swap-to-paint hop drops from a
+            // ~95 ms cross-process bitmap copy to a single-frame
+            // pointer assignment. CGImage fallback covers HDR / float
+            // images where we deliberately skip the BGRA8 surface so
+            // extended dynamic range survives.
+            let nextContents: AnyObject? =
+                image.displaySurface
+                ?? image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            // Wrap the contents swap in a transaction with actions
+            // disabled, belt-and-braces alongside the layer-level
+            // action override above. (AppKit can replace the layer or
+            // its action map during view-controller transitions,
+            // full-screen toggles, backing-display changes, etc.) The
+            // completion block fires after the transaction is flushed
+            // to the render server, which is the closest hook we have
+            // to "the new image is actually on screen".
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            if let onRendered {
+                CATransaction.setCompletionBlock {
+                    // CATransaction completion blocks for app-side
+                    // transactions fire on the main thread already, so
+                    // we don't need a GCD hop. We do need
+                    // `assumeIsolated` to call back into our
+                    // main-actor-isolated closure synchronously without
+                    // tripping strict-concurrency.
+                    MainActor.assumeIsolated { onRendered() }
+                }
+            }
+            v.layer?.contents = nextContents
+            v.displayedImage = image
+            CATransaction.commit()
+        }
         // Layer may be recreated by AppKit; re-assert EDR opt-in every update.
         v.layer?.wantsExtendedDynamicRangeContent = true
         v.layer?.magnificationFilter = pixelated ? .nearest : .linear
         v.layer?.minificationFilter  = .trilinear
+        // `.resize` stretches the bitmap to layer bounds (the parent
+        // SwiftUI `.frame(width:height:)` already computed the right
+        // size for the current zoom); equivalent to NSImageView with
+        // `.scaleAxesIndependently`.
+        v.layer?.contentsGravity = .resize
+        if v.layer?.actions == nil {
+            v.layer?.actions = Self.disabledLayerActions
+        }
     }
 
-    /// `NSImageView` normally participates in AppKit hit-testing, which
-    /// intercepts the mouse/pinch events that SwiftUI's gesture recognizers
-    /// need. Returning `nil` from `hitTest` makes the view invisible to
-    /// AppKit's event dispatch so all input flows through to SwiftUI instead.
-    ///
-    /// `intrinsicContentSize` is set to `.noIntrinsicMetric` so SwiftUI
-    /// ignores the image's natural pixel dimensions during layout — equivalent
-    /// to SwiftUI's `.resizable()` modifier on `Image`. Without this the view
-    /// fights the `.frame(width:height:)` call and zoom snaps to wrong sizes.
-    final class PassthroughImageView: NSImageView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override var intrinsicContentSize: NSSize {
-            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
-        }
+    /// CAAction map that no-ops the implicit animations CALayer would
+    /// otherwise install for `contents`, `bounds`, and `position`. Cached
+    /// once because building it on every update would churn allocations
+    /// during pinch-zoom and pan.
+    fileprivate static let disabledLayerActions: [String: CAAction] = [
+        "contents": NSNull(),
+        "bounds":   NSNull(),
+        "position": NSNull(),
+    ]
+}
+
+/// Plain layer-backed `NSView` used as a thin host for the image
+/// bitmap. We assign the `CGImage` directly to `layer.contents` from
+/// `HDRImageView.updateNSView(_:context:)`, bypassing `NSImageView`'s
+/// `NSBitmapImageRep` round-trip that was adding ~95 ms per swap on
+/// 24-megapixel CR3 previews.
+///
+/// Returning `nil` from `hitTest` makes the view invisible to AppKit's
+/// event dispatch so mouse/pinch events flow through to SwiftUI's
+/// gesture recognizers. `intrinsicContentSize` is `.noIntrinsicMetric`
+/// so SwiftUI doesn't try to size around the image's natural pixel
+/// dimensions and fight our explicit `.frame(width:height:)`.
+final class CGImageHostingView: NSView {
+    /// Identity of the most recently committed `NSImage`. Used by
+    /// `HDRImageView.updateNSView` to detect actual changes — comparing
+    /// `layer.contents` directly is unreliable because the contents can
+    /// be either an IOSurface or a CGImage and CALayer's internal
+    /// representation may transform it on the way in.
+    var displayedImage: NSImage?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+        layer?.actions = HDRImageView.disabledLayerActions
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
+    /// Layer-backed NSViews redraw their contents at the backing
+    /// scale; opting into `contentsScale = 1.0` keeps CALayer from
+    /// doing its own resampling pass on top of our `magnificationFilter`.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        layer?.contentsScale = window?.backingScaleFactor ?? 2.0
     }
 }
 
@@ -403,10 +517,50 @@ private struct ZoomableImage: View {
 
             Color.clear
                 .overlay {
-                    HDRImageView(image: image,
-                                 pixelated: livePPP * displayScale >= 1.0)
-                        .frame(width: scaledSize.width, height: scaledSize.height)
-                        .offset(liveOffset)
+                    HDRImageView(
+                        image: image,
+                        pixelated: livePPP * displayScale >= 1.0,
+                        prepareImageSwap: { [loader] in
+                            // Snapshot the press info now (clearing it
+                            // from the loader) so the latency we log
+                            // matches THIS commit, even under rapid
+                            // arrow-key fire. Then split the timeline
+                            // into two halves so the dev overlay shows
+                            // where the time actually goes:
+                            //
+                            //   press → swap   (SwiftUI body + view update)
+                            //   swap  → paint  (CALayer commit + GPU
+                            //                   upload + WindowServer)
+                            //
+                            // We always return a follow-up closure (even
+                            // when there's no press to log) because the
+                            // loader uses the paint-completion signal to
+                            // *defer* neighbour prefetching until after
+                            // the foreground GPU upload — without it,
+                            // ImageIO's hardware JPEG decoder contends
+                            // with the WindowServer's IOSurface upload
+                            // for shared silicon and adds ~100 ms to the
+                            // visible swap-to-paint window.
+                            let nav = loader.takeNavStart()
+                            let log = loader.log
+                            let swapTime = Date()
+                            if let nav {
+                                let toSwapMs = Int((swapTime.timeIntervalSince(nav.timestamp) * 1000).rounded())
+                                log.info("swap  \(nav.label): +\(toSwapMs) ms (press → swap)")
+                            }
+                            return {
+                                if let nav {
+                                    let now = Date()
+                                    let totalMs = Int((now.timeIntervalSince(nav.timestamp) * 1000).rounded())
+                                    let commitMs = Int((now.timeIntervalSince(swapTime) * 1000).rounded())
+                                    log.info("paint \(nav.label): \(totalMs) ms total (\(commitMs) ms swap → render)")
+                                }
+                                loader.notePaintCommitted()
+                            }
+                        }
+                    )
+                    .frame(width: scaledSize.width, height: scaledSize.height)
+                    .offset(liveOffset)
                 }
                 .frame(width: viewport.width, height: viewport.height)
                 .clipped()
@@ -463,7 +617,12 @@ private struct ZoomableImage: View {
                     }
                     flashScrollbars()
                 }
-                .onChange(of: image) { _, _ in
+                .onChange(of: loader.currentURL) { _, _ in
+                    // Reset pan when the user navigates to a different file.
+                    // We deliberately key on URL (not on `image`) so that an
+                    // in-place RAW preview → full-resolution upgrade for the
+                    // *same* file doesn't snap the user away from where they
+                    // were panned.
                     offset = .zero
                 }
                 .onAppear {
@@ -660,6 +819,22 @@ private struct ScrollIndicator: View {
 private struct MetadataBar: View {
     @EnvironmentObject var loader: ImageLoader
 
+    /// Shown on the right of the metadata summary when the on-screen
+    /// bitmap differs from the source pixel dimensions (e.g. capped
+    /// HEIC, embedded RAW preview, RAW awaiting full-res upgrade).
+    private var renderedSizeText: String? {
+        guard
+            let rendered = loader.renderedBitmapSize,
+            let meta     = loader.metadata
+        else { return nil }
+        let rw = Int(rendered.width.rounded())
+        let rh = Int(rendered.height.rounded())
+        // Allow off-by-one rounding so we don't flag identical sizes.
+        guard abs(rw - meta.pixelWidth) > 1 || abs(rh - meta.pixelHeight) > 1
+        else { return nil }
+        return "rendered \(rw) × \(rh)"
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             if let url = loader.currentURL {
@@ -683,6 +858,29 @@ private struct MetadataBar: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let renderedSizeText {
+                Text(renderedSizeText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .help("Pixel dimensions of the bitmap currently on screen. The source file is larger; the displayed copy was downsampled or is a smaller embedded preview.")
+            }
+
+            if loader.metadata?.isRaw == true {
+                StatusBadge(
+                    label: "RAW",
+                    help:  "Camera RAW container. Demosaiced on the fly; embedded JPEG preview is used until you zoom past it."
+                )
+            }
+            if loader.metadata?.isHDR == true {
+                StatusBadge(
+                    label: "HDR",
+                    help:  "High Dynamic Range image (>8 bits per component or with an HDR gain map). Rendered with extended luminance on capable displays."
+                )
+            }
+            if loader.isShowingRawPreview {
+                RawPreviewBadge()
+            }
+
             Spacer(minLength: 12)
 
             if loader.siblings.count > 1 {
@@ -697,6 +895,187 @@ private struct MetadataBar: View {
         .background(.bar)
         .overlay(alignment: .top) {
             Divider()
+        }
+        .animation(.easeInOut(duration: 0.18), value: loader.isShowingRawPreview)
+        .animation(.easeInOut(duration: 0.18), value: loader.metadata)
+    }
+}
+
+/// Compact pill used for boolean status flags in the metadata bar
+/// (`RAW`, `HDR`). Visually mirrors `RawPreviewBadge` but keeps a
+/// tighter footprint and exposes a tooltip via `help`.
+private struct StatusBadge: View {
+    let label: String
+    let help: String
+
+    var body: some View {
+        Text(label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.quaternary))
+            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.15), lineWidth: 0.5))
+            .help(help)
+            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+}
+
+/// Small pill rendered in the status bar while we're still showing the
+/// camera-embedded JPEG preview of a RAW file. Disappears as soon as the
+/// background full-resolution decode lands.
+private struct RawPreviewBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "camera.aperture")
+                .imageScale(.small)
+            Text("Embedded preview")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(.quaternary))
+        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.15), lineWidth: 0.5))
+        .help("Showing the camera-embedded JPEG preview. The full-resolution RAW decodes in the background and replaces this when you zoom in past the preview's pixel count.")
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+    }
+}
+
+// MARK: - Developer log overlay
+
+/// Floating panel showing recent decode / prefetch / upgrade events with
+/// timestamps. Toggled by ⌘⇧L. Auto-scrolls to the newest entry.
+private struct LoadLogOverlay: View {
+    @ObservedObject var log: LoadLog
+    let onClose: () -> Void
+
+    /// Briefly flips to `true` after a successful copy so the button
+    /// icon swaps to a checkmark, then resets.
+    @State private var justCopied: Bool = false
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            Divider().opacity(0.4)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(log.entries) { entry in
+                            row(for: entry)
+                                .id(entry.id)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .onChange(of: log.entries.last?.id) { _, newID in
+                    guard let newID else { return }
+                    withAnimation(.linear(duration: 0.08)) {
+                        proxy.scrollTo(newID, anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .frame(width: 460, height: 320)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "terminal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Load log")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("\(log.entries.count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Button {
+                copyEntriesToPasteboard()
+            } label: {
+                Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.plain)
+            .help("Copy log to clipboard")
+            .disabled(log.entries.isEmpty)
+            Button {
+                log.clear()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .help("Clear log")
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .help("Close (⌘⇧L)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// Tab-separated, one entry per line: `HH:mm:ss.SSS<TAB>LEVEL<TAB>message`.
+    /// Tabs (rather than fixed-width padding) so the result pastes
+    /// cleanly into spreadsheets, GitHub issue templates, Slack code
+    /// blocks, etc.
+    private func copyEntriesToPasteboard() {
+        let lines = log.entries.map { entry in
+            "\(Self.timeFormatter.string(from: entry.timestamp))\t\(entry.level.rawValue.uppercased())\t\(entry.message)"
+        }
+        let text = lines.joined(separator: "\n")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        flashCopied()
+    }
+
+    private func flashCopied() {
+        withAnimation(.easeOut(duration: 0.15)) { justCopied = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.2))
+            withAnimation(.easeIn(duration: 0.2)) { justCopied = false }
+        }
+    }
+
+    private func row(for entry: LoadLog.Entry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(Self.timeFormatter.string(from: entry.timestamp))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+            Text(entry.message)
+                .font(.caption.monospaced())
+                .foregroundStyle(color(for: entry.level))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func color(for level: LoadLog.Level) -> Color {
+        switch level {
+        case .info:  return .primary
+        case .warn:  return .orange
+        case .error: return .red
         }
     }
 }

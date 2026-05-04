@@ -27,6 +27,12 @@ struct PhotoViewerApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { presentOpenPanel() }
                     .keyboardShortcut("o", modifiers: .command)
+
+                Divider()
+
+                Button("Move to Trash") { loader.deleteCurrent() }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(!loader.canDeleteCurrent)
             }
             // Menu items use ⌘←/⌘→ so they don't shadow the bare arrow-key
             // handler in `ArrowKeyHandler`. Bare arrows as menu key-equivalents
@@ -74,6 +80,13 @@ struct PhotoViewerApp: App {
                     loader.showsMetadata.toggle()
                 }
                 .keyboardShortcut("i", modifiers: .command)
+
+                Divider()
+
+                Button("Toggle Load Log") {
+                    loader.showsLog.toggle()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
         }
     }
