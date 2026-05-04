@@ -3,9 +3,22 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/Flash.icns</key>
+		<data>
+		tve3f+cVYm/5usgugNqJP4q6eoQ=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>Resources/Flash.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			INcrZydvc+lARdAFG0XAuD5QlEIdp6U22O+QZ94nLQE=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>

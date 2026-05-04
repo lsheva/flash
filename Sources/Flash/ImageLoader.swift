@@ -865,7 +865,7 @@ final class ImageLoader: ObservableObject {
         // pipeline wants for the zero-copy fast path.
         let bytesPerRow = ((w * 4) + 63) & ~63
 
-        let props: [IOSurfacePropertyKey: Any] = [
+        let props: [IOSurfacePropertyKey: any Sendable] = [
             .width:           w,
             .height:          h,
             .bytesPerElement: 4,

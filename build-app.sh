@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Builds PhotoViewer with SwiftPM and assembles a proper macOS .app bundle.
+# Builds Flash with SwiftPM and assembles a proper macOS .app bundle.
 # The bundle is required so Launch Services can register the app as an image
 # viewer (Finder "Open With").
 
 set -euo pipefail
 
 CONFIG="${CONFIG:-release}"
-APP_NAME="PhotoViewer"
+APP_NAME="Flash"
 BUNDLE="build/${APP_NAME}.app"
 
 cd "$(dirname "$0")"
@@ -22,6 +22,18 @@ if [[ ! -x "${EXEC}" ]]; then
     exit 1
 fi
 
+# Refresh the .icns whenever the source PNG is newer than (or before)
+# the current icns. Cheap when up-to-date; rebuilds in well under a
+# second when stale.
+ICON_SRC="icon.png"
+ICON_OUT="Resources/${APP_NAME}.icns"
+if [[ -f "${ICON_SRC}" ]]; then
+    if [[ ! -f "${ICON_OUT}" ]] || [[ "${ICON_SRC}" -nt "${ICON_OUT}" ]]; then
+        echo "==> Generating app icon"
+        ./scripts/make-icon.sh "${ICON_SRC}" "${ICON_OUT}"
+    fi
+fi
+
 echo "==> Assembling ${BUNDLE}"
 rm -rf "${BUNDLE}"
 mkdir -p "${BUNDLE}/Contents/MacOS"
@@ -29,11 +41,14 @@ mkdir -p "${BUNDLE}/Contents/Resources"
 
 cp "${EXEC}"                    "${BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp Resources/Info.plist         "${BUNDLE}/Contents/Info.plist"
+if [[ -f "${ICON_OUT}" ]]; then
+    cp "${ICON_OUT}"            "${BUNDLE}/Contents/Resources/"
+fi
 
 echo "==> Ad-hoc codesigning with entitlements"
 codesign --force --deep \
     --sign - \
-    --entitlements Resources/PhotoViewer.entitlements \
+    --entitlements Resources/Flash.entitlements \
     "${BUNDLE}"
 
 # Strip any quarantine attribute the bundle (or its files) might have

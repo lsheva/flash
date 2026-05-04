@@ -1,26 +1,28 @@
-# PhotoViewer — common dev tasks.
+# Flash — common dev tasks.
 # Usage: `make`, `make run`, `make open FILE=~/Pictures/foo.jpg`, etc.
 
-APP_NAME    := PhotoViewer
+APP_NAME    := Flash
 CONFIG      ?= release
 BUILD_DIR   := build
 BUNDLE      := $(BUILD_DIR)/$(APP_NAME).app
 EXEC        := $(BUNDLE)/Contents/MacOS/$(APP_NAME)
 ENTITLEMENTS := Resources/$(APP_NAME).entitlements
 INFO_PLIST   := Resources/Info.plist
+ICON_SRC     := icon.png
+ICON_OUT     := Resources/$(APP_NAME).icns
 LSREGISTER  := /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
 # Stable signing identity (created by `make setup-signing`). When present,
 # the build uses it instead of an ephemeral ad-hoc signature, which is what
 # lets macOS remember per-app consent decisions across rebuilds.
-SIGN_NAME   := PhotoViewer Local Signing
+SIGN_NAME   := Flash Local Signing
 
 .DEFAULT_GOAL := app
 
-.PHONY: help build app run open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing
+.PHONY: help build app run open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon
 
 help:
-	@echo "PhotoViewer make targets:"
+	@echo "Flash make targets:"
 	@echo "  build           swift build -c $(CONFIG)"
 	@echo "  app             build + assemble + codesign $(BUNDLE) (default)"
 	@echo "  run             app + open $(BUNDLE)"
@@ -30,11 +32,20 @@ help:
 	@echo "  register        re-run lsregister so Finder picks up the bundle"
 	@echo "  debug           CONFIG=debug build (alias)"
 	@echo "  verify          print bundle codesign + entitlements info"
+	@echo "  icon            regenerate $(ICON_OUT) from $(ICON_SRC)"
 	@echo "  setup-signing   one-time: install a stable self-signed identity"
 	@echo "  trust-app       whitelist the installed bundle with Gatekeeper"
 	@echo "  remove-signing  delete the stable identity from the keychain"
 	@echo "  clean           rm -rf $(BUILD_DIR) and SwiftPM .build"
 	@echo "  distclean       clean + remove SwiftPM caches"
+
+# Build the .icns from the project-root PNG via sips + iconutil. Apple
+# doesn't accept vector input for app icons; this populates all the
+# canonical bitmap slots from one square source.
+icon: $(ICON_OUT)
+
+$(ICON_OUT): $(ICON_SRC) scripts/make-icon.sh
+	@./scripts/make-icon.sh "$(ICON_SRC)" "$(ICON_OUT)"
 
 build:
 	swift build -c $(CONFIG)
@@ -45,16 +56,17 @@ debug:
 # Assemble the .app bundle: copy the SwiftPM-built executable + Info.plist
 # into a Cocoa bundle layout, then ad-hoc codesign with the entitlements
 # and re-register it with Launch Services.
-$(BUNDLE): build $(INFO_PLIST) $(ENTITLEMENTS)
+$(BUNDLE): build $(INFO_PLIST) $(ENTITLEMENTS) $(ICON_OUT)
 	@echo "==> Assembling $(BUNDLE)"
 	@rm -rf "$(BUNDLE)"
 	@mkdir -p "$(BUNDLE)/Contents/MacOS"
 	@mkdir -p "$(BUNDLE)/Contents/Resources"
 	@cp "$$(swift build -c $(CONFIG) --show-bin-path)/$(APP_NAME)" "$(EXEC)"
 	@cp "$(INFO_PLIST)" "$(BUNDLE)/Contents/Info.plist"
+	@cp "$(ICON_OUT)"   "$(BUNDLE)/Contents/Resources/"
 	@# Pick the strongest stable signing identity available, in this order:
 	@#   1. Apple Development / Developer ID  - Apple-trusted, Gatekeeper-ready
-	@#   2. PhotoViewer Local Signing         - our self-signed cert
+	@#   2. Flash Local Signing               - our self-signed cert
 	@#   3. ad-hoc (-)                        - rebuilt-each-time signature
 	@#
 	@# Detection uses `find-identity` without -v so we still pick up the
@@ -150,13 +162,13 @@ trust-app:
 		echo; \
 		echo "  Option A (Finder):"; \
 		echo "    1. Open /Applications in Finder."; \
-		echo "    2. Right-click PhotoViewer → Open."; \
+		echo "    2. Right-click Flash → Open."; \
 		echo "    3. Click 'Open' / 'Open Anyway' in the dialog."; \
 		echo; \
 		echo "  Option B (System Settings):"; \
 		echo "    1. Try to launch the app once (it'll be blocked)."; \
 		echo "    2. System Settings → Privacy & Security → scroll to"; \
-		echo "       the bottom → click 'Open Anyway' next to PhotoViewer."; \
+		echo "       the bottom → click 'Open Anyway' next to Flash."; \
 		echo; \
 		echo "  After approval, the decision sticks across rebuilds because"; \
 		echo "  the codesign identity stays the same."; \

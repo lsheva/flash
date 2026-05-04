@@ -3,13 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Photo Viewer</string>
+    <string>Flash</string>
     <key>CFBundleDisplayName</key>
-    <string>Photo Viewer</string>
+    <string>Flash</string>
     <key>CFBundleExecutable</key>
-    <string>PhotoViewer</string>
+    <string>Flash</string>
+    <key>CFBundleIconFile</key>
+    <string>Flash</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.shev.PhotoViewer</string>
+    <string>dev.shev.Flash</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

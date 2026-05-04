@@ -2,7 +2,7 @@
 # Creates a stable, self-signed Code Signing identity in the user's login
 # keychain and trusts it for code signing. After running this once, the
 # Makefile's `app` target picks it up automatically and uses
-# `codesign --sign "PhotoViewer Local Signing"` instead of `--sign -` (ad-hoc).
+# `codesign --sign "Flash Local Signing"` instead of `--sign -` (ad-hoc).
 #
 # Why bother?
 #   • Ad-hoc signatures change on every rebuild (code-directory hash differs),
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-IDENTITY="PhotoViewer Local Signing"
+IDENTITY="Flash Local Signing"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 # ------------------------------------------------------------------ guard ----
@@ -47,8 +47,8 @@ prompt             = no
 x509_extensions    = v3_codesign
 
 [dn]
-CN = PhotoViewer Local Signing
-O  = PhotoViewer
+CN = Flash Local Signing
+O  = Flash
 OU = Local Use
 
 [v3_codesign]
@@ -80,7 +80,7 @@ openssl req -x509 -new -nodes -newkey rsa:2048 -sha256 -days 3650 \
 #      makes both sides agree. The password is throwaway: it only
 #      protects the file for the second between creation and import,
 #      after which the key is re-protected by the login keychain.
-TRANSIT_PASS="photoviewer-transit"
+TRANSIT_PASS="flash-transit"
 
 openssl pkcs12 -export \
     -keypbe  PBE-SHA1-3DES \
@@ -137,12 +137,12 @@ if [ "$TRUST_OK" -eq 0 ]; then
     echo "          -k \"$KEYCHAIN\" \\"
     echo "          ~/Library/Keychains/login.keychain-db"
     echo
-    echo "      Or open Keychain Access, find 'PhotoViewer Local Signing',"
+    echo "      Or open Keychain Access, find 'Flash Local Signing',"
     echo "      double-click it, expand 'Trust', and set 'Code Signing'"
     echo "      to 'Always Trust'."
 fi
 echo
-echo "Verify:        security find-identity -p codesigning | grep PhotoViewer"
+echo "Verify:        security find-identity -p codesigning | grep Flash"
 echo "Build app:     make app"
 echo "Install:       make install"
 echo

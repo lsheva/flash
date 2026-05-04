@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "PhotoViewer",
+    name: "Flash",
     platforms: [
         .macOS(.v14)
     ],
     targets: [
         .executableTarget(
-            name: "PhotoViewer",
-            path: "Sources/PhotoViewer"
+            name: "Flash",
+            path: "Sources/Flash"
         )
     ]
 )

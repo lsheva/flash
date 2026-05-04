@@ -222,7 +222,7 @@ struct ContentView: View {
     }
 
     private var windowTitle: String {
-        guard let url = loader.currentURL else { return "Photo Viewer" }
+        guard let url = loader.currentURL else { return "Flash" }
         return url.lastPathComponent
     }
 }

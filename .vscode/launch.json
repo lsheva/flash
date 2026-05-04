@@ -5,20 +5,20 @@
       "request": "launch",
       "args": [],
       "cwd": "${workspaceFolder:photo-viewer}",
-      "name": "Debug PhotoViewer",
-      "target": "PhotoViewer",
+      "name": "Debug Flash",
+      "target": "Flash",
       "configuration": "debug",
-      "preLaunchTask": "swift: Build Debug PhotoViewer"
+      "preLaunchTask": "swift: Build Debug Flash"
     },
     {
       "type": "swift",
       "request": "launch",
       "args": [],
       "cwd": "${workspaceFolder:photo-viewer}",
-      "name": "Release PhotoViewer",
-      "target": "PhotoViewer",
+      "name": "Release Flash",
+      "target": "Flash",
       "configuration": "release",
-      "preLaunchTask": "swift: Build Release PhotoViewer"
+      "preLaunchTask": "swift: Build Release Flash"
     }
   ]
 }

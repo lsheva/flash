@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct PhotoViewerApp: App {
+struct FlashApp: App {
     @StateObject private var loader = ImageLoader()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
