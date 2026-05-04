@@ -170,10 +170,23 @@ final class ImageLoader: ObservableObject {
             scopedFolder = folder.startAccessingSecurityScopedResource() ? folder : nil
         }
 
+        // Best-effort: clear `com.apple.quarantine` from this file before we
+        // read its bytes. macOS Sequoia prompts ("App can't verify the file
+        // isn't malware…") whenever an ad-hoc-signed app reads a quarantined
+        // file. Stripping the xattr is metadata-only and doesn't itself
+        // trigger Gatekeeper, so doing it preemptively suppresses the prompt
+        // for files the user owns. Silently no-ops if we can't write metadata.
+        Self.dropQuarantine(resolved)
+
         do {
             let neighbours = try scanFolder(folder)
             siblings = neighbours
             currentIndex = neighbours.firstIndex(of: resolved) ?? 0
+            // Also clear neighbours so arrow-key navigation doesn't hit the
+            // dialog later. Done off-main since it's pure metadata I/O.
+            Task.detached(priority: .utility) { [neighbours] in
+                for n in neighbours { Self.dropQuarantine(n) }
+            }
         } catch {
             siblings = [resolved]
             currentIndex = 0
@@ -181,6 +194,18 @@ final class ImageLoader: ObservableObject {
         }
 
         show(resolved)
+    }
+
+    /// Remove the `com.apple.quarantine` extended attribute from `url`.
+    /// Best-effort: we ignore any failure (file we don't own, read-only
+    /// filesystem, no xattr in the first place).
+    ///
+    /// We use the NSURL bridge rather than `URLResourceValues` because
+    /// setting the Swift wrapper's `quarantineProperties = nil` historically
+    /// *clears the dictionary contents* but doesn't always remove the xattr
+    /// itself. The NSURL `setResourceValue(nil, forKey:)` form does.
+    nonisolated static func dropQuarantine(_ url: URL) {
+        try? (url as NSURL).setResourceValue(nil, forKey: .quarantinePropertiesKey)
     }
 
     func next() {
@@ -300,6 +325,10 @@ final class ImageLoader: ObservableObject {
                 kCGImageSourceCreateThumbnailWithTransform:   true,
                 kCGImageSourceShouldCacheImmediately:         true,
                 kCGImageSourceThumbnailMaxPixelSize:          maxPixel,
+                // Preserve float-component pixel values (> 1.0) so that HDR
+                // images retain their extended luminance rather than being
+                // tone-mapped to SDR before we even see the CGImage.
+                kCGImageSourceShouldAllowFloat:               true,
             ]
             guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
                 return nil

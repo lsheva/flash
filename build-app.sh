@@ -36,6 +36,12 @@ codesign --force --deep \
     --entitlements Resources/PhotoViewer.entitlements \
     "${BUNDLE}"
 
+# Strip any quarantine attribute the bundle (or its files) might have
+# inherited. A quarantined app gets *all* of its file-read operations
+# scrutinised by Gatekeeper, which on Sequoia means a dialog per file.
+echo "==> Removing quarantine attribute"
+xattr -dr com.apple.quarantine "${BUNDLE}" 2>/dev/null || true
+
 echo "==> Registering bundle with Launch Services"
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
     -f "${BUNDLE}" >/dev/null 2>&1 || true

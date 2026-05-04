@@ -267,6 +267,53 @@ private final class ScrollWheelHandler {
 /// pinch-to-zoom around the cursor: the point under the user's fingers at
 /// the start of the gesture stays under the cursor as the factor changes.
 ///
+/// An `NSImageView` wrapped to opt in to EDR (Extended Dynamic Range)
+/// rendering. When the backing display supports it, pixel values above
+/// SDR white (> 1.0 in the image's color space) are rendered at their
+/// true luminance rather than being clipped, so HDR images — HEIC gain-map,
+/// AVIF HDR, OpenEXR, Radiance HDR, etc. — look as intended.
+///
+/// Interpolation at the `CALayer` level mirrors SwiftUI's `.interpolation`:
+/// nearest-neighbour (sharp pixels) when zoomed in past 1:1, trilinear
+/// (smooth) when zoomed out.
+private struct HDRImageView: NSViewRepresentable {
+    let image: NSImage
+    /// `true` → nearest-neighbour magnification (zoomed in ≥ 100%).
+    let pixelated: Bool
+
+    func makeNSView(context: Context) -> PassthroughImageView {
+        let v = PassthroughImageView()
+        v.wantsLayer = true
+        v.imageScaling = .scaleAxesIndependently
+        v.imageAlignment = .alignCenter
+        return v
+    }
+
+    func updateNSView(_ v: PassthroughImageView, context: Context) {
+        if v.image !== image { v.image = image }
+        // Layer may be recreated by AppKit; re-assert EDR opt-in every update.
+        v.layer?.wantsExtendedDynamicRangeContent = true
+        v.layer?.magnificationFilter = pixelated ? .nearest : .linear
+        v.layer?.minificationFilter  = .trilinear
+    }
+
+    /// `NSImageView` normally participates in AppKit hit-testing, which
+    /// intercepts the mouse/pinch events that SwiftUI's gesture recognizers
+    /// need. Returning `nil` from `hitTest` makes the view invisible to
+    /// AppKit's event dispatch so all input flows through to SwiftUI instead.
+    ///
+    /// `intrinsicContentSize` is set to `.noIntrinsicMetric` so SwiftUI
+    /// ignores the image's natural pixel dimensions during layout — equivalent
+    /// to SwiftUI's `.resizable()` modifier on `Image`. Without this the view
+    /// fights the `.frame(width:height:)` call and zoom snaps to wrong sizes.
+    final class PassthroughImageView: NSImageView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+    }
+}
+
 /// Panning sources:
 /// - Mouse drag (`DragGesture`)
 /// - Trackpad two-finger swipe / mouse wheel (a local `NSEvent` scroll-wheel
@@ -356,9 +403,8 @@ private struct ZoomableImage: View {
 
             Color.clear
                 .overlay {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(livePPP * displayScale >= 1.0 ? .none : .high)
+                    HDRImageView(image: image,
+                                 pixelated: livePPP * displayScale >= 1.0)
                         .frame(width: scaledSize.width, height: scaledSize.height)
                         .offset(liveOffset)
                 }
