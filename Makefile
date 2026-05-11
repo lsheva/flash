@@ -3,12 +3,11 @@
 
 APP_NAME    := Flash
 CONFIG      ?= release
-BUILD_DIR   := build
-BUNDLE      := $(BUILD_DIR)/$(APP_NAME).app
+BUNDLE      := $(APP_NAME).app
 EXEC        := $(BUNDLE)/Contents/MacOS/$(APP_NAME)
 ENTITLEMENTS := Resources/$(APP_NAME).entitlements
 INFO_PLIST   := Resources/Info.plist
-ICON_SRC     := icon.png
+ICON_SRC     := Design/icon.png
 ICON_OUT     := Resources/$(APP_NAME).icns
 LSREGISTER  := /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
@@ -19,12 +18,13 @@ SIGN_NAME   := Flash Local Signing
 
 .DEFAULT_GOAL := app
 
-.PHONY: help build app run open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon
+.PHONY: help build app run dev open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon
 
 help:
 	@echo "Flash make targets:"
 	@echo "  build           swift build -c $(CONFIG)"
 	@echo "  app             build + assemble + codesign $(BUNDLE) (default)"
+	@echo "  dev             app CONFIG=debug + open (faster incremental builds)"
 	@echo "  run             app + open $(BUNDLE)"
 	@echo "  open FILE=…     app + open the bundle on FILE"
 	@echo "  install         copy $(BUNDLE) into /Applications and re-register"
@@ -36,7 +36,7 @@ help:
 	@echo "  setup-signing   one-time: install a stable self-signed identity"
 	@echo "  trust-app       whitelist the installed bundle with Gatekeeper"
 	@echo "  remove-signing  delete the stable identity from the keychain"
-	@echo "  clean           rm -rf $(BUILD_DIR) and SwiftPM .build"
+	@echo "  clean           rm -rf $(BUNDLE) and SwiftPM .build"
 	@echo "  distclean       clean + remove SwiftPM caches"
 
 # Build the .icns from the project-root PNG via sips + iconutil. Apple
@@ -44,8 +44,8 @@ help:
 # canonical bitmap slots from one square source.
 icon: $(ICON_OUT)
 
-$(ICON_OUT): $(ICON_SRC) scripts/make-icon.sh
-	@./scripts/make-icon.sh "$(ICON_SRC)" "$(ICON_OUT)"
+$(ICON_OUT): $(ICON_SRC) Scripts/make-icon.sh
+	@./Scripts/make-icon.sh "$(ICON_SRC)" "$(ICON_OUT)"
 
 build:
 	swift build -c $(CONFIG)
@@ -98,6 +98,14 @@ $(BUNDLE): build $(INFO_PLIST) $(ENTITLEMENTS) $(ICON_OUT)
 
 app: $(BUNDLE)
 
+# Same as `make app` but built with the debug configuration. Faster
+# incremental compiles and richer backtraces; ideal while iterating.
+DEV_IMAGE   ?= ./Design/image.CR3
+
+dev:
+	$(MAKE) app CONFIG=debug
+	"$(EXEC)" "$(DEV_IMAGE)"
+
 run: app
 	open "$(BUNDLE)"
 
@@ -136,7 +144,7 @@ verify:
 # login keychain. After this, subsequent `make app` invocations sign with
 # the same identity instead of producing a fresh ad-hoc signature.
 setup-signing:
-	@./scripts/setup-signing.sh
+	@./Scripts/setup-signing.sh
 
 # Report the current Gatekeeper assessment of the installed bundle and,
 # if it's rejected, walk the user through the (now manual) approval flow.
@@ -187,7 +195,7 @@ remove-signing:
 	@echo "Done."
 
 clean:
-	rm -rf "$(BUILD_DIR)" .build
+	rm -rf "$(BUNDLE)" .build
 
 distclean: clean
 	rm -rf .swiftpm

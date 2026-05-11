@@ -5,83 +5,6 @@ import ImageIO
 import IOSurface
 import UniformTypeIdentifiers
 
-
-/// Where the thumbnail browser is displayed relative to the main image.
-enum ThumbnailPosition: String, CaseIterable, Identifiable {
-    case hidden, bottom, trailing
-    var id: String { rawValue }
-}
-
-/// How the image is currently sized relative to the viewport.
-///
-/// - `.fit` is a *mode*: the image is scaled-to-fit the viewport and follows
-///   any window resize.
-/// - `.scale(s)` is an *absolute* zoom level expressed as
-///   `source pixel : screen backing pixel`. `s == 1.0` means each image
-///   pixel is rendered onto exactly one physical screen pixel — i.e. the
-///   "100%" or "Actual Size" convention used by Preview, Photoshop, etc.
-enum Zoom: Equatable {
-    case fit
-    case scale(CGFloat)
-
-    /// Absolute scale bounds and step factor. `step` is √2 so two clicks
-    /// double the zoom, which lines up with the percentage labels people
-    /// expect (50, 71, 100, 141, 200, 283, 400…).
-    static let min:  CGFloat = 0.05
-    static let max:  CGFloat = 16.0
-    static let step: CGFloat = 1.4142135623730951
-
-    var isFit: Bool {
-        if case .fit = self { return true } else { return false }
-    }
-
-    /// The absolute scale, when in `.scale` mode.
-    var absolute: CGFloat? {
-        if case .scale(let s) = self { return s } else { return nil }
-    }
-}
-
-/// Lightweight, decoded-from-EXIF metadata used by the bottom info bar.
-struct ImageMetadata: Equatable {
-    var pixelWidth: Int
-    var pixelHeight: Int
-    var fileSize: Int64?
-    var camera: String?
-    var lens: String?
-    var iso: Int?
-    var aperture: Double?
-    var shutter: String?
-    var focalLengthMM: Double?
-    var dateTaken: Date?
-    var colorModel: String?
-    /// Friendly name of the embedded ICC profile, when one is present.
-    /// Examples: "sRGB IEC61966-2.1", "Display P3", "Adobe RGB (1998)".
-    /// Falls back to `nil` for files with no recognized profile.
-    var profileName: String?
-    /// `true` when the file is a camera RAW container (CR3, ARW, NEF,
-    /// DNG, etc.). Drives the RAW badge in the status bar.
-    var isRaw: Bool
-    /// `true` when the file carries HDR information — either >8 bits
-    /// per component (HDR HEIC, EXR, Radiance HDR) or an embedded
-    /// HDR gain-map auxiliary (iPhone HDR HEIC). Drives the HDR badge.
-    var isHDR: Bool
-
-    /// Compact one-line summary for the status bar. Includes the
-    /// original-on-disk pixel dimensions, file size, color profile,
-    /// camera body, and an EXIF tail (focal/aperture/shutter/ISO).
-    var summary: String {
-        var parts: [String] = ["\(pixelWidth) × \(pixelHeight) px"]
-        if let fileSize    { parts.append(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)) }
-        if let profileName { parts.append(profileName) }
-        if let camera      { parts.append(camera) }
-        if let focalLengthMM { parts.append(String(format: "%.0f mm", focalLengthMM)) }
-        if let aperture    { parts.append(String(format: "f/%.1f", aperture)) }
-        if let shutter     { parts.append("\(shutter) s") }
-        if let iso         { parts.append("ISO \(iso)") }
-        return parts.joined(separator: "  ·  ")
-    }
-}
-
 /// Reactive store that owns the currently displayed image, the list of
 /// sibling images in the same folder, and the navigation cursor.
 ///
@@ -156,6 +79,45 @@ final class ImageLoader: ObservableObject {
     @Published var zoom: Zoom = .fit
     @Published var showsMetadata: Bool = true
     @Published private(set) var metadata: ImageMetadata?
+    @Published var isFullscreen: Bool = false {
+        didSet {
+            chromeVisible = true
+            if isFullscreen {
+                scheduleChromeHide()
+            } else {
+                cancelChromeHide()
+            }
+        }
+    }
+
+    @Published var chromeVisible: Bool = true
+    private var chromeHideTimer: Timer?
+    private var chromeIdleDelay: TimeInterval = 2.0
+
+    init() {
+        print("ImageLoader.init", ObjectIdentifier(self))
+    }
+
+    func notePointerActivity() {
+        guard isFullscreen else { return }
+        if !chromeVisible {
+            chromeVisible = true
+        }
+        scheduleChromeHide()
+    }
+
+    func scheduleChromeHide() {
+        cancelChromeHide()
+        chromeHideTimer = Timer.scheduledTimer(withTimeInterval: chromeIdleDelay, repeats: false) {
+            _ in
+            MainActor.assumeIsolated { self.chromeVisible = false }
+        }
+    }
+
+    func cancelChromeHide() {
+        chromeHideTimer?.invalidate()
+        chromeHideTimer = nil
+    }
 
     /// The effective on-screen scale (`1.0` = 1 image pixel : 1 backing
     /// pixel) that's *currently* being rendered. The view writes this on
@@ -179,10 +141,8 @@ final class ImageLoader: ObservableObject {
     }()
 
     /// File extensions corresponding to `supportedTypes`, lower-cased.
-    static let supportedExtensions: Set<String> = {
-        Set(supportedTypes.flatMap { $0.tags[.filenameExtension] ?? [] }
-            .map { $0.lowercased() })
-    }()
+    static let supportedExtensions: Set<String> = Set(supportedTypes.flatMap { $0.tags[.filenameExtension] ?? [] }
+        .map { $0.lowercased() })
 
     /// Tracks security-scoped access so we can stop it when switching folders.
     private var scopedFolder: URL?
@@ -191,7 +151,7 @@ final class ImageLoader: ObservableObject {
     /// memory pressure automatically.
     private let cache: NSCache<NSURL, NSImage> = {
         let c = NSCache<NSURL, NSImage>()
-        c.countLimit = 7    // current ± 3 neighbours, comfortably
+        c.countLimit = 7 // current ± 3 neighbours, comfortably
         return c
     }()
 
@@ -233,9 +193,11 @@ final class ImageLoader: ObservableObject {
 
     deinit {
         scopedFolder?.stopAccessingSecurityScopedResource()
+        print("ImageLoader.deinit", ObjectIdentifier(self))
     }
 
     func open(url: URL) {
+        print("ImageLoader.open id=\(ObjectIdentifier(self)) url=\(url.lastPathComponent)")
         let resolved = url.resolvingSymlinksInPath()
         let folder = resolved.deletingLastPathComponent()
         log.info("open \(resolved.lastPathComponent)")
@@ -265,7 +227,9 @@ final class ImageLoader: ObservableObject {
             // Also clear neighbours so arrow-key navigation doesn't hit the
             // dialog later. Done off-main since it's pure metadata I/O.
             Task.detached(priority: .utility) { [neighbours] in
-                for n in neighbours { Self.dropQuarantine(n) }
+                for n in neighbours {
+                    Self.dropQuarantine(n)
+                }
             }
         } catch {
             siblings = [resolved]
@@ -309,7 +273,9 @@ final class ImageLoader: ObservableObject {
     // MARK: - Delete
 
     /// `true` when there's a current image that can be moved to the Trash.
-    var canDeleteCurrent: Bool { currentURL != nil }
+    var canDeleteCurrent: Bool {
+        currentURL != nil
+    }
 
     /// Move the currently displayed image to the Trash and advance to the
     /// next sibling (or the previous one if we were on the last image).
@@ -377,8 +343,13 @@ final class ImageLoader: ObservableObject {
         zoom = .scale(next)
     }
 
-    func zoomToFit()        { zoom = .fit }
-    func zoomToActualSize() { zoom = .scale(1.0) }
+    func zoomToFit() {
+        zoom = .fit
+    }
+
+    func zoomToActualSize() {
+        zoom = .scale(1.0)
+    }
 
     // MARK: - Private
 
@@ -519,7 +490,9 @@ final class ImageLoader: ObservableObject {
         let prevIdx = (currentIndex - 1 + siblings.count) % siblings.count
         let neighbours: [URL] = [siblings[nextIdx], siblings[prevIdx]]
 
-        for url in neighbours { prefetch(url) }
+        for url in neighbours {
+            prefetch(url)
+        }
 
         let keep = Set(neighbours)
         for (url, task) in prefetchTasks where !keep.contains(url) {
@@ -600,13 +573,13 @@ final class ImageLoader: ObservableObject {
             }
             let opts: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform:   true,
-                kCGImageSourceShouldCacheImmediately:         true,
-                kCGImageSourceThumbnailMaxPixelSize:          maxPixel,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel,
                 // Preserve float-component pixel values (> 1.0) so that HDR
                 // images retain their extended luminance rather than being
                 // tone-mapped to SDR before we even see the CGImage.
-                kCGImageSourceShouldAllowFloat:               true,
+                kCGImageSourceShouldAllowFloat: true,
             ]
             guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
                 log.error("decode \(name): CreateThumbnailAtIndex returned nil")
@@ -630,22 +603,23 @@ final class ImageLoader: ObservableObject {
     /// dimensions a viewer would see (rotated when EXIF orientation
     /// is 5–8), so callers can use it as a logical-size reference
     /// when comparing against a downsampled bitmap.
-    nonisolated private static func sourceVisualSize(_ src: CGImageSource) -> CGSize? {
+    private nonisolated static func sourceVisualSize(_ src: CGImageSource) -> CGSize? {
         guard let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         else { return nil }
-        let w = (props[kCGImagePropertyPixelWidth]  as? CGFloat) ?? 0
+        let w = (props[kCGImagePropertyPixelWidth] as? CGFloat) ?? 0
         let h = (props[kCGImagePropertyPixelHeight] as? CGFloat) ?? 0
         guard w > 0, h > 0 else { return nil }
         let orientation = (props[kCGImagePropertyOrientation] as? Int) ?? 1
-        let rotated = (5...8).contains(orientation)
+        let rotated = (5 ... 8).contains(orientation)
         return CGSize(width: rotated ? h : w, height: rotated ? w : h)
     }
 
     /// `true` if `url` looks like a camera RAW (by UTType when available,
     /// extension as a fallback for files without a recognised content type).
-    nonisolated private static func isRawImage(_ url: URL) -> Bool {
+    private nonisolated static func isRawImage(_ url: URL) -> Bool {
         if let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType,
-           type.conforms(to: .rawImage) {
+           type.conforms(to: .rawImage)
+        {
             return true
         }
         return Self.rawExtensions.contains(url.pathExtension.lowercased())
@@ -653,7 +627,7 @@ final class ImageLoader: ObservableObject {
 
     /// Common RAW container extensions. Used only as a fallback when the
     /// system can't resolve a UTType for the file.
-    nonisolated private static let rawExtensions: Set<String> = [
+    private nonisolated static let rawExtensions: Set<String> = [
         "3fr", "ari", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs",
         "dng", "drf", "eip", "erf", "fff", "iiq", "k25", "kdc", "mdc", "mef",
         "mos", "mrw", "nef", "nrw", "obm", "orf", "pef", "ptx", "pxn", "r3d",
@@ -668,37 +642,37 @@ final class ImageLoader: ObservableObject {
     /// Returns the preview pixels alongside the full RAW's point dimensions
     /// (orientation-corrected) so the caller can present the small bitmap
     /// at the logical size of the full image.
-    nonisolated private static func decodeRawEmbeddedPreview(url: URL, maxPixel: CGFloat)
+    private nonisolated static func decodeRawEmbeddedPreview(url: URL, maxPixel: CGFloat)
         -> (cgImage: CGImage, fullPointSize: CGSize)?
     {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         else { return nil }
 
-        let rawW = (props[kCGImagePropertyPixelWidth]  as? CGFloat) ?? 0
+        let rawW = (props[kCGImagePropertyPixelWidth] as? CGFloat) ?? 0
         let rawH = (props[kCGImagePropertyPixelHeight] as? CGFloat) ?? 0
         guard rawW > 0, rawH > 0 else { return nil }
 
         // EXIF orientations 5-8 swap width and height when applied.
         let orientation = (props[kCGImagePropertyOrientation] as? Int) ?? 1
-        let rotated = (5...8).contains(orientation)
+        let rotated = (5 ... 8).contains(orientation)
         let fullPointSize = CGSize(
-            width:  rotated ? rawH : rawW,
+            width: rotated ? rawH : rawW,
             height: rotated ? rawW : rawH
         )
 
         let opts: [CFString: Any] = [
             // Embedded only — never demosaic the sensor data here.
             kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
-            kCGImageSourceCreateThumbnailFromImageAlways:   false,
-            kCGImageSourceCreateThumbnailWithTransform:     true,
-            kCGImageSourceShouldCacheImmediately:           true,
+            kCGImageSourceCreateThumbnailFromImageAlways: false,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
             // Caller-controlled cap. The hot navigation path passes
             // `decodeMaxPixel` (sized to the largest connected screen),
             // matching the JPEG/HEIC strategy. The upgrade path passes
             // a near-uncapped value so the embedded preview comes back
             // at full file resolution when the user zooms in.
-            kCGImageSourceThumbnailMaxPixelSize:            maxPixel,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
             return nil
@@ -720,7 +694,7 @@ final class ImageLoader: ObservableObject {
     /// For JPEG / HEIC / TIFF / etc. we ask ImageIO for the full image
     /// data with no max-pixel cap; that's a few hundred ms for a
     /// typical 24 MP JPEG on Apple silicon.
-    nonisolated private static func decodeFullResolution(url: URL, log: LoadLog) -> NSImage? {
+    private nonisolated static func decodeFullResolution(url: URL, log: LoadLog) -> NSImage? {
         let name = url.lastPathComponent
         let t0 = Date()
 
@@ -728,7 +702,7 @@ final class ImageLoader: ObservableObject {
             // 16384 is effectively "uncapped" — every camera embeds
             // previews far smaller than that. Picks up the sensor-sized
             // JPEG that's already inside the RAW container.
-            if let preview = Self.decodeRawEmbeddedPreview(url: url, maxPixel: 16_384) {
+            if let preview = Self.decodeRawEmbeddedPreview(url: url, maxPixel: 16384) {
                 let cg = preview.cgImage
                 let ms = Int((Date().timeIntervalSince(t0) * 1000).rounded())
                 log.info("upgrade \(name): RAW embedded preview \(cg.width)×\(cg.height) in \(ms) ms")
@@ -743,9 +717,9 @@ final class ImageLoader: ObservableObject {
         }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform:   true,
-            kCGImageSourceShouldCacheImmediately:         true,
-            kCGImageSourceShouldAllowFloat:               true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceShouldAllowFloat: true,
             // Deliberately no kCGImageSourceThumbnailMaxPixelSize — we want
             // the full source resolution.
         ]
@@ -783,7 +757,7 @@ final class ImageLoader: ObservableObject {
     /// (or larger). `false` for a RAW preview presented at the full RAW's
     /// point size — those benefit from a background upgrade.
     private static func isFullResolutionImage(_ image: NSImage) -> Bool {
-        Self.bitmapPixelWidth(image) >= Int(image.size.width.rounded()) - 1
+        bitmapPixelWidth(image) >= Int(image.size.width.rounded()) - 1
     }
 
     /// Constructs an `NSImage` from a CGImage, tagging it with the
@@ -845,11 +819,13 @@ final class ImageLoader: ObservableObject {
         let destSpace: CGColorSpace = {
             if let srcName = cg.colorSpace?.name {
                 if srcName == CGColorSpace.sRGB,
-                   let s = CGColorSpace(name: CGColorSpace.sRGB) {
+                   let s = CGColorSpace(name: CGColorSpace.sRGB)
+                {
                     return s
                 }
                 if srcName == CGColorSpace.displayP3,
-                   let s = CGColorSpace(name: CGColorSpace.displayP3) {
+                   let s = CGColorSpace(name: CGColorSpace.displayP3)
+                {
                     return s
                 }
             }
@@ -866,11 +842,11 @@ final class ImageLoader: ObservableObject {
         let bytesPerRow = ((w * 4) + 63) & ~63
 
         let props: [IOSurfacePropertyKey: any Sendable] = [
-            .width:           w,
-            .height:          h,
+            .width: w,
+            .height: h,
             .bytesPerElement: 4,
-            .bytesPerRow:     bytesPerRow,
-            .pixelFormat:     Int(kCVPixelFormatType_32BGRA),
+            .bytesPerRow: bytesPerRow,
+            .pixelFormat: Int(kCVPixelFormatType_32BGRA),
         ]
         guard let surface = IOSurface(properties: props) else { return nil }
 
@@ -898,14 +874,14 @@ final class ImageLoader: ObservableObject {
         defer { surface.unlock(options: [], seed: nil) }
 
         guard let ctx = CGContext(
-            data:             surface.baseAddress,
-            width:            w,
-            height:           h,
+            data: surface.baseAddress,
+            width: w,
+            height: h,
             bitsPerComponent: 8,
-            bytesPerRow:      bytesPerRow,
-            space:            destSpace,
-            bitmapInfo:       CGBitmapInfo.byteOrder32Little.rawValue
-                            | CGImageAlphaInfo.premultipliedFirst.rawValue
+            bytesPerRow: bytesPerRow,
+            space: destSpace,
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue
+                | CGImageAlphaInfo.premultipliedFirst.rawValue
         ) else { return nil }
 
         // CGContext does the source.colorSpace → destSpace conversion
@@ -1005,19 +981,19 @@ final class ImageLoader: ObservableObject {
 
     /// Try the fast embedded-thumbnail path first; if ImageIO can't or
     /// won't produce one, ask it to decode from the full image data.
-    nonisolated private static func decodeThumbnailCG(url: URL, maxPixel: CGFloat) -> SendableCGImage? {
+    private nonisolated static func decodeThumbnailCG(url: URL, maxPixel: CGFloat) -> SendableCGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
         let baseOpts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately:       true,
-            kCGImageSourceThumbnailMaxPixelSize:        maxPixel,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
         ]
 
         // 1. Fast: use the embedded thumbnail if one exists and is large enough.
         var opts = baseOpts
         opts[kCGImageSourceCreateThumbnailFromImageIfAbsent] = false
-        opts[kCGImageSourceCreateThumbnailFromImageAlways]   = false
+        opts[kCGImageSourceCreateThumbnailFromImageAlways] = false
         if let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) {
             return SendableCGImage(cg)
         }
@@ -1065,23 +1041,23 @@ final class ImageLoader: ObservableObject {
             let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
             let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
 
-            let width  = (props[kCGImagePropertyPixelWidth]  as? Int) ?? 0
+            let width = (props[kCGImagePropertyPixelWidth] as? Int) ?? 0
             let height = (props[kCGImagePropertyPixelHeight] as? Int) ?? 0
 
-            let make  = tiff[kCGImagePropertyTIFFMake]  as? String
+            let make = tiff[kCGImagePropertyTIFFMake] as? String
             let model = tiff[kCGImagePropertyTIFFModel] as? String
             let camera: String? = {
                 switch (make, model) {
                 case let (m?, mm?) where !mm.lowercased().contains(m.lowercased()):
                     return "\(m) \(mm)"
                 case let (_, mm?): return mm
-                case let (m?, _):  return m
-                default:           return nil
+                case let (m?, _): return m
+                default: return nil
                 }
             }()
 
             let lens = (exif[kCGImagePropertyExifLensModel] as? String)
-                    ?? (exif[kCGImagePropertyExifLensMake]  as? String)
+                ?? (exif[kCGImagePropertyExifLensMake] as? String)
 
             let iso: Int? = {
                 if let arr = exif[kCGImagePropertyExifISOSpeedRatings] as? [Int],
@@ -1131,20 +1107,20 @@ final class ImageLoader: ObservableObject {
                 .flatMap { Int64($0) }
 
             return ImageMetadata(
-                pixelWidth:    width,
-                pixelHeight:   height,
-                fileSize:      fileSize,
-                camera:        camera,
-                lens:          lens,
-                iso:           iso,
-                aperture:      aperture,
-                shutter:       shutter,
+                pixelWidth: width,
+                pixelHeight: height,
+                fileSize: fileSize,
+                camera: camera,
+                lens: lens,
+                iso: iso,
+                aperture: aperture,
+                shutter: shutter,
                 focalLengthMM: focal,
-                dateTaken:     date,
-                colorModel:    colorModel,
-                profileName:   profileName,
-                isRaw:         isRaw,
-                isHDR:         isHDR
+                dateTaken: date,
+                colorModel: colorModel,
+                profileName: profileName,
+                isRaw: isRaw,
+                isHDR: isHDR
             )
         }.value
     }
@@ -1162,7 +1138,8 @@ final class ImageLoader: ObservableObject {
         let filtered = contents.filter { url in
             if let values = try? url.resourceValues(forKeys: Set(keys)),
                values.isRegularFile == true,
-               let type = values.contentType {
+               let type = values.contentType
+            {
                 return supported.contains { type.conforms(to: $0) }
             }
             return Self.supportedExtensions.contains(url.pathExtension.lowercased())
@@ -1180,7 +1157,9 @@ final class ImageLoader: ObservableObject {
 /// guarantee explicit so we don't trip the strict-concurrency checker.
 private struct SendableCGImage: @unchecked Sendable {
     let image: CGImage
-    init(_ image: CGImage) { self.image = image }
+    init(_ image: CGImage) {
+        self.image = image
+    }
 }
 
 // MARK: - NSImage source-bitmap-width tagging
@@ -1236,7 +1215,7 @@ extension NSImage {
 /// `@Published` mutation happens on the main actor via `Task { @MainActor }`,
 /// preserving SwiftUI's invariants.
 final class LoadLog: ObservableObject, @unchecked Sendable {
-    enum Level: String, Sendable {
+    enum Level: String {
         case info, warn, error
     }
 
@@ -1255,9 +1234,17 @@ final class LoadLog: ObservableObject, @unchecked Sendable {
     private let cap = 500
     private let counter = AtomicCounter()
 
-    func info(_ msg: String)  { append(.info,  msg) }
-    func warn(_ msg: String)  { append(.warn,  msg) }
-    func error(_ msg: String) { append(.error, msg) }
+    func info(_ msg: String) {
+        append(.info, msg)
+    }
+
+    func warn(_ msg: String) {
+        append(.warn, msg)
+    }
+
+    func error(_ msg: String) {
+        append(.error, msg)
+    }
 
     private func append(_ level: Level, _ msg: String) {
         let entry = Entry(
@@ -1287,7 +1274,9 @@ final class LoadLog: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @MainActor func clear() { entries.removeAll() }
+    @MainActor func clear() {
+        entries.removeAll()
+    }
 }
 
 /// Lock-free monotonically-increasing UInt64 counter. Used to give every

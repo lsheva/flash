@@ -10,29 +10,31 @@ A small SwiftUI photo viewer for macOS 14+.
 - `File ▸ Open…` (`⌘O`) presents an `NSOpenPanel`.
 - Registers as an image viewer via `CFBundleDocumentTypes`, so it appears in
   Finder's *Open With* menu.
-- App-sandboxed with `user-selected.read-only`, plus security-scoped access
-  to the parent folder for sibling enumeration.
+- Not sandboxed (intentional — sibling-folder enumeration needs parent-folder
+  read access, which the sandbox doesn't grant for `user-selected.read-only`).
 
 ## Build
 
 Requires Xcode 15+ command line tools (Swift 6, macOS 14+ SDK).
 
 ```bash
-./build-app.sh
-open build/Flash.app
+make run     # builds Flash.app, codesigns, opens it
+make dev     # debug build with stdout streaming to your terminal
+make help    # see all targets
 ```
 
-The script:
+The `app` target:
 
 1. `swift build -c release`
-2. Wraps the executable into `build/Flash.app/Contents/{MacOS,Info.plist}`
-3. Ad-hoc codesigns it with `Resources/Flash.entitlements`
+2. Wraps the executable into `Flash.app/Contents/{MacOS,Info.plist}`
+3. Codesigns it with `Resources/Flash.entitlements` (using the strongest
+   available identity, falling back to ad-hoc)
 4. Registers the bundle with Launch Services so Finder picks it up
 
 ## Usage
 
 - Double-click an image in Finder and pick *Open With ▸ Flash*, or
-- `open -a build/Flash.app /path/to/photo.jpg`, or
+- `open -a Flash.app /path/to/photo.jpg`, or
 - Launch the app and choose `File ▸ Open…`
 
 Once an image is shown, use `←` / `→` to flip through the rest of the folder.
@@ -42,7 +44,7 @@ Once an image is shown, use `←` / `→` to flip through the rest of the folder
 ```
 photo-viewer/
 ├── Package.swift
-├── build-app.sh
+├── Makefile
 ├── Resources/
 │   ├── Info.plist
 │   └── Flash.entitlements

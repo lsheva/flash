@@ -7,20 +7,23 @@ struct FlashApp: App {
     @StateObject private var loader = ImageLoader()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    init() {
-        // Bridge AppKit -> SwiftUI store so files opened by Launch Services
-        // (Finder "Open With", `open -a`, dock drops, etc.) reach our model
-        // even before any SwiftUI scene exists.
-        AppDelegate.openHandler = { [loader = _loader] url in
-            Task { @MainActor in loader.wrappedValue.open(url: url) }
-        }
-    }
-
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(loader)
                 .onOpenURL { url in loader.open(url: url) }
+                .onAppear {
+                    AppDelegate.openHandler = {
+                        url in Task {
+                            @MainActor in loader.open(url: url)
+                        }
+                    }
+                    AppDelegate.fullscreenHandler = {
+                        isFullscreen in Task {
+                            @MainActor in loader.isFullscreen = isFullscreen
+                        }
+                    }
+                }
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -109,13 +112,42 @@ struct FlashApp: App {
 /// forward them to whichever ImageLoader is currently alive.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var openHandler: ((URL) -> Void)?
+    @MainActor static var fullscreenHandler: ((Bool) -> Void)?
+    /// File passed on argv when the binary is run directly (e.g. `make dev`).
+    /// Launch Services doesn't deliver argv via `application(_:open:)`, so we
+    /// stash it here and `ContentView` consumes it on first appear.
+    @MainActor static var pendingArgvURL: URL?
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
         true
     }
 
-    func application(_ application: NSApplication, open urls: [URL]) {
+    func application(_: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         Task { @MainActor in Self.openHandler?(url) }
+    }
+
+    func applicationDidFinishLaunching(_: Notification) {
+        for arg in CommandLine.arguments.dropFirst() where !arg.hasPrefix("-") {
+            let url = URL(fileURLWithPath: arg)
+            if FileManager.default.fileExists(atPath: url.path) {
+                Self.pendingArgvURL = url
+                break
+            }
+        }
+
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: nil, queue: .main) {
+            _ in
+            Task {
+                @MainActor in Self.fullscreenHandler?(true)
+            }
+        }
+        nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main) {
+            _ in
+            Task {
+                @MainActor in Self.fullscreenHandler?(false)
+            }
+        }
     }
 }
