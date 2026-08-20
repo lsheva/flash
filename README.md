@@ -20,7 +20,7 @@ enough; there is no `.xcodeproj`.
 
 ```bash
 make run     # builds Flash.app, codesigns, opens it
-make dev     # debug build, then opens the sample RAW in Design/
+make dev     # debug build and open the app
 make help    # see all targets
 ```
 

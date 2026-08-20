@@ -100,11 +100,9 @@ app: $(BUNDLE)
 
 # Same as `make app` but built with the debug configuration. Faster
 # incremental compiles and richer backtraces; ideal while iterating.
-DEV_IMAGE   ?= ./Design/image.CR3
-
 dev:
 	$(MAKE) app CONFIG=debug
-	"$(EXEC)" "$(DEV_IMAGE)"
+	open "$(BUNDLE)"
 
 run: app
 	open "$(BUNDLE)"
