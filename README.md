@@ -26,12 +26,19 @@ brew tap lsheva/flash
 brew install --cask flash-viewer
 ```
 
+Already installed:
+
+```bash
+brew update
+brew upgrade --cask flash-viewer
+```
+
 That installs `Flash.app` into `/Applications`. The cask is named
 `flash-viewer` because `brew install flash` is already an SD-card tool.
 
 ### Download
 
-1. Get [Flash-0.1.0.zip](https://github.com/lsheva/flash/releases/download/v0.1.0/Flash-0.1.0.zip) from [Releases](https://github.com/lsheva/flash/releases).
+1. Get [Flash-0.1.1.zip](https://github.com/lsheva/flash/releases/download/v0.1.1/Flash-0.1.1.zip) from [Releases](https://github.com/lsheva/flash/releases).
 2. Unzip and drag `Flash.app` into `/Applications`.
 3. If macOS refuses to open it, strip quarantine, then try again:
 
@@ -47,6 +54,9 @@ open /Applications/Flash.app
 - Launch the app and choose `File ▸ Open…`
 
 Once an image is shown, use `←` / `→` to flip through the rest of the folder.
+
+On first launch, Flash can offer to become the default image viewer. You can
+also do that later from `File ▸ Use Flash to Open Images…`.
 
 To skip per-folder permission prompts (Desktop, Documents, Downloads, Photos):
 **System Settings → Privacy & Security → Full Disk Access** → add Flash.

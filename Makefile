@@ -2,7 +2,7 @@
 # Usage: `make`, `make run`, `make open FILE=~/Pictures/foo.jpg`, etc.
 
 APP_NAME    := Flash
-APP_VERSION := 0.1.0
+APP_VERSION := 0.1.1
 CONFIG      ?= release
 BUNDLE      := $(APP_NAME).app
 EXEC        := $(BUNDLE)/Contents/MacOS/$(APP_NAME)

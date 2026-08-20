@@ -23,6 +23,7 @@ struct FlashApp: App {
                             @MainActor in loader.isFullscreen = isFullscreen
                         }
                     }
+                    FileAssociations.promptOnLaunchIfNeeded()
                 }
         }
         .windowResizability(.contentMinSize)
@@ -30,6 +31,10 @@ struct FlashApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { presentOpenPanel() }
                     .keyboardShortcut("o", modifiers: .command)
+
+                Button("Use Flash to Open Images…") {
+                    FileAssociations.confirmAndClaim()
+                }
 
                 Divider()
 
