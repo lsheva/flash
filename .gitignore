@@ -13,3 +13,6 @@ Resources/Flash.icns
 
 # Local sample images (not shipped).
 Design/image.CR3
+
+# Release zips from `make dist`.
+/dist

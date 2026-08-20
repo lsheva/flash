@@ -2,6 +2,7 @@
 # Usage: `make`, `make run`, `make open FILE=~/Pictures/foo.jpg`, etc.
 
 APP_NAME    := Flash
+APP_VERSION := 0.1.0
 CONFIG      ?= release
 BUNDLE      := $(APP_NAME).app
 EXEC        := $(BUNDLE)/Contents/MacOS/$(APP_NAME)
@@ -9,16 +10,21 @@ ENTITLEMENTS := Resources/$(APP_NAME).entitlements
 INFO_PLIST   := Resources/Info.plist
 ICON_SRC     := Design/icon.png
 ICON_OUT     := Resources/$(APP_NAME).icns
+DIST_ZIP    := dist/$(APP_NAME)-$(APP_VERSION).zip
 LSREGISTER  := /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
 # Stable signing identity (created by `make setup-signing`). When present,
 # the build uses it instead of an ephemeral ad-hoc signature, which is what
 # lets macOS remember per-app consent decisions across rebuilds.
+#
+# Override with CODESIGN_IDENTITY=- for a portable ad-hoc signature
+# (Homebrew dist zips, CI). Leave empty to auto-detect.
 SIGN_NAME   := Flash Local Signing
+CODESIGN_IDENTITY ?=
 
 .DEFAULT_GOAL := app
 
-.PHONY: help build app run dev open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon
+.PHONY: help build app run dev open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon dist
 
 help:
 	@echo "Flash make targets:"
@@ -36,6 +42,7 @@ help:
 	@echo "  setup-signing   one-time: install a stable self-signed identity"
 	@echo "  trust-app       whitelist the installed bundle with Gatekeeper"
 	@echo "  remove-signing  delete the stable identity from the keychain"
+	@echo "  dist            ad-hoc-sign $(BUNDLE) and zip it for GitHub Releases"
 	@echo "  clean           rm -rf $(BUNDLE) and SwiftPM .build"
 	@echo "  distclean       clean + remove SwiftPM caches"
 
@@ -73,11 +80,14 @@ $(BUNDLE): build $(INFO_PLIST) $(ENTITLEMENTS) $(ICON_OUT)
 	@# self-signed cert even when it isn't user-trusted: codesign only
 	@# needs the private key to *produce* a signature; trust only matters
 	@# for *verifying* it (which we handle separately via `make trust-app`).
-	@IDENT=$$( { security find-identity -p codesigning 2>/dev/null; } | \
-		awk -F'"' '/"Developer ID Application/ {print $$2; found=1; exit} \
-		           /"Apple Development:/      {print $$2; found=1; exit} \
-		           /"$(SIGN_NAME)"/           {print $$2; found=1; exit} \
-		           END {exit !found}' ); \
+	@IDENT="$(CODESIGN_IDENTITY)"; \
+	if [ -z "$$IDENT" ]; then \
+		IDENT=$$( { security find-identity -p codesigning 2>/dev/null; } | \
+			awk -F'"' '/"Developer ID Application/ {print $$2; found=1; exit} \
+			           /"Apple Development:/      {print $$2; found=1; exit} \
+			           /"$(SIGN_NAME)"/           {print $$2; found=1; exit} \
+			           END {exit !found}' ); \
+	fi; \
 	if [ -n "$$IDENT" ]; then \
 		echo "==> Codesigning with '$$IDENT'"; \
 		codesign --force --deep --sign "$$IDENT" \
@@ -97,6 +107,17 @@ $(BUNDLE): build $(INFO_PLIST) $(ENTITLEMENTS) $(ICON_OUT)
 	@echo "==> Done: $(abspath $(BUNDLE))"
 
 app: $(BUNDLE)
+
+# Zip a portable ad-hoc-signed bundle for GitHub Releases / Homebrew.
+# Identity is forced to "-" so the zip is not tied to this Mac's certs.
+dist:
+	@rm -rf "$(BUNDLE)"
+	$(MAKE) app CODESIGN_IDENTITY=-
+	@mkdir -p dist
+	@rm -f "$(DIST_ZIP)"
+	@ditto -c -k --keepParent "$(BUNDLE)" "$(DIST_ZIP)"
+	@echo "==> $(abspath $(DIST_ZIP))"
+	@shasum -a 256 "$(DIST_ZIP)"
 
 # Same as `make app` but built with the debug configuration. Faster
 # incremental compiles and richer backtraces; ideal while iterating.
