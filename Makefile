@@ -115,7 +115,7 @@ dist:
 	$(MAKE) app CODESIGN_IDENTITY=-
 	@mkdir -p dist
 	@rm -f "$(DIST_ZIP)"
-	@ditto -c -k --keepParent "$(BUNDLE)" "$(DIST_ZIP)"
+	@ditto -c -k --keepParent --norsrc --noextattr "$(BUNDLE)" "$(DIST_ZIP)"
 	@echo "==> $(abspath $(DIST_ZIP))"
 	@shasum -a 256 "$(DIST_ZIP)"
 
