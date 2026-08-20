@@ -22,7 +22,7 @@ then **System Settings → Privacy & Security → Open Anyway**.
 ### Homebrew
 
 ```bash
-brew tap lsheva/flash
+brew tap lsheva/tap
 brew install --cask flash-viewer
 ```
 
@@ -161,7 +161,7 @@ Day to day after that: `git pull && make install`.
 ## Release
 
 On an Apple Silicon Mac with `gh` logged in and push access to `lsheva/flash`
-and `lsheva/homebrew-flash`:
+and `lsheva/homebrew-tap`:
 
 ```bash
 make release VERSION=0.1.2

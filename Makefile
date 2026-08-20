@@ -121,7 +121,7 @@ dist:
 	@echo "==> $(abspath $(DIST_ZIP))"
 	@shasum -a 256 "$(DIST_ZIP)"
 
-# Cut a GitHub Release and bump lsheva/homebrew-flash. See Scripts/release.sh.
+# Cut a GitHub Release and bump lsheva/homebrew-tap. See Scripts/release.sh.
 # Usage: make release VERSION=0.1.2
 #        make release VERSION=0.1.2 NOTES='…'
 release:

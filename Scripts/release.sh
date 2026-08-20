@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Cut a Flash release: bump version files, ad-hoc-sign a zip, tag, upload to
-# GitHub Releases, and point the lsheva/homebrew-flash cask at it.
+# GitHub Releases, and point the lsheva/homebrew-tap cask at it.
 
 set -euo pipefail
 
 APP_NAME="Flash"
 APP_REPO="lsheva/flash"
-TAP_REPO="lsheva/homebrew-flash"
+TAP_REPO="lsheva/homebrew-tap"
 CASK_TOKEN="flash-viewer"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,7 +23,7 @@ Usage:
   make release VERSION=0.1.2 NOTES='What changed.'
 
 Needs macOS arm64, Xcode, gh (logged in), and push access to lsheva/flash
-and lsheva/homebrew-flash. Does not rewrite git history.
+and lsheva/homebrew-tap. Does not rewrite git history.
 EOF
 }
 
