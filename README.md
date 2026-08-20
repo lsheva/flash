@@ -1,6 +1,6 @@
 # Flash
 
-A small SwiftUI photo viewer for macOS 14+.
+A small SwiftUI photo viewer for macOS 14+ (Apple Silicon).
 
 - Native SwiftUI UI, AppKit `NSImage` for decoding.
 - Supports every format ImageIO knows about (JPEG, PNG, TIFF, GIF, BMP, ICO,
@@ -13,22 +13,43 @@ A small SwiftUI photo viewer for macOS 14+.
 - Not sandboxed (intentional — sibling-folder enumeration needs parent-folder
   read access, which the sandbox doesn't grant for `user-selected.read-only`).
 
-## Install (Homebrew)
+## Install
 
-Apple Silicon, macOS 14+. The cask is unsigned (no Apple Developer Program),
-so this lives in a personal tap rather than official `homebrew-cask`.
+The published app is **ad-hoc signed, not notarized**. macOS 15+ will often
+block the first launch of a download. If that happens: open the app once,
+then **System Settings → Privacy & Security → Open Anyway**.
+
+### Homebrew
 
 ```bash
 brew tap lsheva/flash
 brew install --cask flash-viewer
 ```
 
-That puts `Flash.app` in `/Applications`. Homebrew strips quarantine after
-install. If macOS still blocks the first launch: **System Settings → Privacy
-& Security → Open Anyway**.
+That installs `Flash.app` into `/Applications`. The cask is named
+`flash-viewer` because `brew install flash` is already an SD-card tool.
 
-`flash` is already a Homebrew core formula (an SD-card tool), which is why
-the cask is named `flash-viewer`.
+### Download
+
+1. Get [Flash-0.1.0.zip](https://github.com/lsheva/flash/releases/download/v0.1.0/Flash-0.1.0.zip) from [Releases](https://github.com/lsheva/flash/releases).
+2. Unzip and drag `Flash.app` into `/Applications`.
+3. If macOS refuses to open it, strip quarantine, then try again:
+
+```bash
+xattr -cr /Applications/Flash.app
+open /Applications/Flash.app
+```
+
+## Usage
+
+- Double-click an image in Finder and pick *Open With ▸ Flash*, or
+- `open -a Flash /path/to/photo.jpg`, or
+- Launch the app and choose `File ▸ Open…`
+
+Once an image is shown, use `←` / `→` to flip through the rest of the folder.
+
+To skip per-folder permission prompts (Desktop, Documents, Downloads, Photos):
+**System Settings → Privacy & Security → Full Disk Access** → add Flash.
 
 ## Build
 
@@ -126,14 +147,6 @@ You want a named `Authority=` (Apple Development or Flash Local Signing),
 not `Signature=adhoc`.
 
 Day to day after that: `git pull && make install`.
-
-## Usage
-
-- Double-click an image in Finder and pick *Open With ▸ Flash*, or
-- `open -a Flash.app /path/to/photo.jpg`, or
-- Launch the app and choose `File ▸ Open…`
-
-Once an image is shown, use `←` / `→` to flip through the rest of the folder.
 
 ## Layout
 
