@@ -46,8 +46,8 @@ is only for machines you control.
 ### 1. Clone
 
 ```bash
-git clone git@github.com:lsheva/photo-viewer.git
-cd photo-viewer
+git clone git@github.com:lsheva/flash.git
+cd flash
 xcode-select --install          # skip if Xcode is already installed
 swift --version                 # expect Swift 6.x
 ```
