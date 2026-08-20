@@ -24,7 +24,7 @@ CODESIGN_IDENTITY ?=
 
 .DEFAULT_GOAL := app
 
-.PHONY: help build app run dev open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon dist
+.PHONY: help build app run dev open install uninstall register debug clean distclean verify setup-signing trust-app remove-signing icon dist release
 
 help:
 	@echo "Flash make targets:"
@@ -43,6 +43,8 @@ help:
 	@echo "  trust-app       whitelist the installed bundle with Gatekeeper"
 	@echo "  remove-signing  delete the stable identity from the keychain"
 	@echo "  dist            ad-hoc-sign $(BUNDLE) and zip it for GitHub Releases"
+	@echo "  release         dist + GitHub Release + bump the Homebrew cask"
+	@echo "                  (make release VERSION=0.1.2)"
 	@echo "  clean           rm -rf $(BUNDLE) and SwiftPM .build"
 	@echo "  distclean       clean + remove SwiftPM caches"
 
@@ -118,6 +120,20 @@ dist:
 	@ditto -c -k --keepParent --norsrc --noextattr "$(BUNDLE)" "$(DIST_ZIP)"
 	@echo "==> $(abspath $(DIST_ZIP))"
 	@shasum -a 256 "$(DIST_ZIP)"
+
+# Cut a GitHub Release and bump lsheva/homebrew-flash. See Scripts/release.sh.
+# Usage: make release VERSION=0.1.2
+#        make release VERSION=0.1.2 NOTES='…'
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release VERSION=0.1.2" >&2; \
+		exit 1; \
+	fi
+	@if [ -n "$(NOTES)" ]; then \
+		./Scripts/release.sh "$(VERSION)" --notes "$(NOTES)"; \
+	else \
+		./Scripts/release.sh "$(VERSION)"; \
+	fi
 
 # Same as `make app` but built with the debug configuration. Faster
 # incremental compiles and richer backtraces; ideal while iterating.

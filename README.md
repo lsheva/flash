@@ -158,6 +158,19 @@ not `Signature=adhoc`.
 
 Day to day after that: `git pull && make install`.
 
+## Release
+
+On an Apple Silicon Mac with `gh` logged in and push access to `lsheva/flash`
+and `lsheva/homebrew-flash`:
+
+```bash
+make release VERSION=0.1.2
+make release VERSION=0.1.2 NOTES='What changed.'
+```
+
+That bumps version files, builds an ad-hoc zip (`make dist`), tags `v0.1.2`,
+uploads it to GitHub Releases, and updates the `flash-viewer` cask.
+
 ## Layout
 
 ```
