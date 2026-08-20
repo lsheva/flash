@@ -13,6 +13,23 @@ A small SwiftUI photo viewer for macOS 14+.
 - Not sandboxed (intentional — sibling-folder enumeration needs parent-folder
   read access, which the sandbox doesn't grant for `user-selected.read-only`).
 
+## Install (Homebrew)
+
+Apple Silicon, macOS 14+. The cask is unsigned (no Apple Developer Program),
+so this lives in a personal tap rather than official `homebrew-cask`.
+
+```bash
+brew tap lsheva/flash
+brew install --cask flash-viewer
+```
+
+That puts `Flash.app` in `/Applications`. Homebrew strips quarantine after
+install. If macOS still blocks the first launch: **System Settings → Privacy
+& Security → Open Anyway**.
+
+`flash` is already a Homebrew core formula (an SD-card tool), which is why
+the cask is named `flash-viewer`.
+
 ## Build
 
 Requires macOS 14+ and Xcode 15+ (Swift 6). Command Line Tools alone are
